@@ -1,0 +1,14 @@
+[
+  {
+    "endTime": "2024-01-01 10:00",
+    "artistName": "Sample Artist",
+    "trackName": "Sample Track",
+    "msPlayed": 120000
+  },
+  {
+    "endTime": "2024-01-01 10:05",
+    "artistName": "Another Artist",
+    "trackName": "Another Track",
+    "msPlayed": 90000
+  }
+]
