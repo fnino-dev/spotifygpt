@@ -20,6 +20,28 @@ pip install -e '.[dev]'
 pytest
 ```
 
+## CLI usage
+
+```bash
+# Import streaming history into SQLite
+python -m spotifygpt import data/sample ./spotifygpt.db
+
+# Compute metrics
+python -m spotifygpt metrics ./spotifygpt.db
+
+# Classify tracks
+python -m spotifygpt classify ./spotifygpt.db --threshold-ms 200000
+
+# Generate weekly radar
+python -m spotifygpt weekly-radar ./spotifygpt.db --top-n 5
+
+# Generate daily mode summary
+python -m spotifygpt daily-mode ./spotifygpt.db
+
+# Generate alerts
+python -m spotifygpt alerts ./spotifygpt.db
+```
+
 ---
 
 ## Development
