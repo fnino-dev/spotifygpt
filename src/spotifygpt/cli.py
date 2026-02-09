@@ -7,7 +7,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from spotifygpt.importer import init_db, load_streaming_history, store_streams
+from spotifygpt.alerts import detect_alerts
+from spotifygpt.importer import init_db, load_streaming_history, store_alerts, store_streams
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,8 +30,12 @@ def main(argv: list[str] | None = None) -> int:
     with sqlite3.connect(args.db) as connection:
         init_db(connection)
         inserted = store_streams(connection, result.streams)
+        alerts = detect_alerts(result.streams)
+        alert_count = store_alerts(connection, alerts)
 
     print(f"Imported {inserted} streams from {len(result.files)} files.")
+    if alert_count:
+        print(f"Detected {alert_count} alerts.")
 
     if result.errors:
         print(f"Encountered {len(result.errors)} errors.", file=sys.stderr)

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from spotifygpt.alerts import Alert, detect_alerts
+
 LOGGER = logging.getLogger(__name__)
 
 
@@ -98,6 +100,16 @@ def initialize_db(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_type TEXT NOT NULL,
+            detected_at TEXT NOT NULL,
+            evidence JSON NOT NULL
+        )
+        """
+    )
     connection.commit()
 
 
@@ -121,12 +133,29 @@ def insert_streams(connection: sqlite3.Connection, streams: Iterable[Stream]) ->
     connection.commit()
 
 
+def insert_alerts(connection: sqlite3.Connection, alerts: Iterable[Alert]) -> int:
+    rows = [(alert.alert_type, alert.detected_at, alert.serialize_evidence()) for alert in alerts]
+    if not rows:
+        return 0
+    connection.executemany(
+        """
+        INSERT INTO alerts (alert_type, detected_at, evidence)
+        VALUES (?, ?, ?)
+        """,
+        rows,
+    )
+    connection.commit()
+    return len(rows)
+
+
 def import_streaming_history(input_dir: Path, db_path: Path) -> int:
     streams = load_streams(input_dir)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as connection:
         initialize_db(connection)
         insert_streams(connection, streams)
+        alerts = detect_alerts(streams)
+        insert_alerts(connection, alerts)
     return len(streams)
 
 
