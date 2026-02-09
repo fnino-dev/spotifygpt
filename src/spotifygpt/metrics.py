@@ -1,30 +1,22 @@
-"""Compute aggregation tables and behavioral metrics from stream data."""
+"""Compute and persist metrics derived from normalized stream records."""
 
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Iterable
 
 
-DATETIME_FORMAT = "%Y-%m-%d %H:%M"
-
-
-@dataclass
-class StreamRow:
+@dataclass(frozen=True)
+class StreamRecord:
+    track_key: str
     track_name: str
     artist_name: str
     end_time: datetime
     ms_played: int
-    track_key: str
 
 
-def _parse_datetime(value: str) -> datetime:
-    return datetime.strptime(value, DATETIME_FORMAT)
-
-
-def init_metrics_db(connection) -> None:
+def init_metrics_tables(connection) -> None:
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS track_aggregates (
@@ -41,143 +33,156 @@ def init_metrics_db(connection) -> None:
     )
     connection.execute(
         """
-        CREATE TABLE IF NOT EXISTS global_metrics (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            total_plays INTEGER NOT NULL,
-            unique_tracks INTEGER NOT NULL,
-            rotation REAL NOT NULL,
-            repetition_score REAL NOT NULL
+        CREATE TABLE IF NOT EXISTS metrics_global (
+            metric_name TEXT PRIMARY KEY,
+            metric_value REAL NOT NULL
         )
         """
     )
     connection.execute(
         """
-        CREATE TABLE IF NOT EXISTS weekly_metrics (
-            week_start TEXT PRIMARY KEY,
-            total_plays INTEGER NOT NULL,
-            unique_tracks INTEGER NOT NULL,
-            rotation REAL NOT NULL,
-            repetition_score REAL NOT NULL
+        CREATE TABLE IF NOT EXISTS metrics_weekly (
+            week_start TEXT NOT NULL,
+            metric_name TEXT NOT NULL,
+            metric_value REAL NOT NULL,
+            PRIMARY KEY (week_start, metric_name)
         )
         """
     )
     connection.execute(
         """
-        CREATE TABLE IF NOT EXISTS temporal_hourly (
-            hour INTEGER PRIMARY KEY,
-            play_count INTEGER NOT NULL
-        )
-        """
-    )
-    connection.execute(
-        """
-        CREATE TABLE IF NOT EXISTS temporal_weekday (
-            day_of_week INTEGER PRIMARY KEY,
-            play_count INTEGER NOT NULL
+        CREATE TABLE IF NOT EXISTS temporal_distributions (
+            scope TEXT NOT NULL,
+            week_start TEXT,
+            bucket_type TEXT NOT NULL,
+            bucket INTEGER NOT NULL,
+            play_count INTEGER NOT NULL,
+            PRIMARY KEY (scope, week_start, bucket_type, bucket)
         )
         """
     )
     connection.commit()
 
 
-def _load_streams(connection) -> list[StreamRow]:
+def _parse_end_time(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return datetime.strptime(value, "%Y-%m-%d %H:%M")
+
+
+def _week_start(date_value: datetime) -> str:
+    monday = date_value.date() - timedelta(days=date_value.weekday())
+    return monday.isoformat()
+
+
+def _load_streams(connection) -> list[StreamRecord]:
     rows = connection.execute(
         """
-        SELECT track_name, artist_name, end_time, ms_played, track_key
+        SELECT track_key, track_name, artist_name, end_time, ms_played
         FROM streams
         """
     ).fetchall()
-    return [
-        StreamRow(
-            track_name=row[0],
-            artist_name=row[1],
-            end_time=_parse_datetime(row[2]),
-            ms_played=row[3],
-            track_key=row[4],
+    records: list[StreamRecord] = []
+    for track_key, track_name, artist_name, end_time, ms_played in rows:
+        records.append(
+            StreamRecord(
+                track_key=track_key,
+                track_name=track_name,
+                artist_name=artist_name,
+                end_time=_parse_end_time(end_time),
+                ms_played=ms_played,
+            )
         )
-        for row in rows
-    ]
+    return records
 
 
-def _recency_weight(reference: datetime, play_time: datetime) -> float:
-    days_since = max((reference.date() - play_time.date()).days, 0)
-    return 1 / (1 + days_since)
+def _recency_weighted_repetition_score(records: list[StreamRecord]) -> float:
+    """
+    Compute recency-weighted repetition score.
 
+    Formula:
+        weight = 1 / (1 + days_since_play)
+        repetition_score = sum(weight for each play) / unique_tracks
+    """
 
-def _compute_repetition_score(reference: datetime, plays: Iterable[datetime]) -> float:
-    play_list = list(plays)
-    if not play_list:
+    if not records:
         return 0.0
-    # Recency-weighted repetition score:
-    # weight(play) = 1 / (1 + days_since_play), where days_since_play is measured
-    # from the most recent play in the scope being evaluated.
-    total_weight = sum(_recency_weight(reference, play) for play in play_list)
-    return total_weight / len(play_list)
+    reference_time = max(record.end_time for record in records)
+    unique_tracks = {record.track_key for record in records}
+    if not unique_tracks:
+        return 0.0
+    weighted_total = 0.0
+    for record in records:
+        days_since = (reference_time - record.end_time).days
+        weighted_total += 1 / (1 + days_since)
+    return weighted_total / len(unique_tracks)
 
 
-def compute_metrics(connection) -> None:
-    init_metrics_db(connection)
-    connection.execute("DELETE FROM track_aggregates")
-    connection.execute("DELETE FROM global_metrics")
-    connection.execute("DELETE FROM weekly_metrics")
-    connection.execute("DELETE FROM temporal_hourly")
-    connection.execute("DELETE FROM temporal_weekday")
+def _clear_existing_metrics(connection) -> None:
+    for table in (
+        "track_aggregates",
+        "metrics_global",
+        "metrics_weekly",
+        "temporal_distributions",
+    ):
+        connection.execute(f"DELETE FROM {table}")
+    connection.commit()
 
-    streams = _load_streams(connection)
-    if not streams:
-        connection.execute(
+
+def compute_and_store_metrics(connection) -> None:
+    init_metrics_tables(connection)
+    records = _load_streams(connection)
+    _clear_existing_metrics(connection)
+
+    if not records:
+        connection.executemany(
             """
-            INSERT INTO global_metrics (id, total_plays, unique_tracks, rotation, repetition_score)
-            VALUES (1, 0, 0, 0.0, 0.0)
-            """
+            INSERT INTO metrics_global (metric_name, metric_value)
+            VALUES (?, ?)
+            """,
+            [
+                ("rotation", 0.0),
+                ("repetition_score", 0.0),
+            ],
         )
         connection.commit()
         return
 
-    track_stats: dict[str, dict[str, object]] = {}
-    hourly_counts: dict[int, int] = defaultdict(int)
-    weekday_counts: dict[int, int] = defaultdict(int)
-    weekly_plays: dict[str, list[StreamRow]] = defaultdict(list)
-
-    for stream in streams:
+    track_stats: dict[str, dict[str, float]] = {}
+    for record in records:
         stats = track_stats.setdefault(
-            stream.track_key,
+            record.track_key,
             {
-                "track_name": stream.track_name,
-                "artist_name": stream.artist_name,
+                "track_name": record.track_name,
+                "artist_name": record.artist_name,
                 "play_count": 0,
                 "total_ms_played": 0,
                 "plays_over_60s": 0,
             },
         )
-        stats["play_count"] = int(stats["play_count"]) + 1
-        stats["total_ms_played"] = int(stats["total_ms_played"]) + stream.ms_played
-        if stream.ms_played >= 60000:
-            stats["plays_over_60s"] = int(stats["plays_over_60s"]) + 1
-
-        hourly_counts[stream.end_time.hour] += 1
-        weekday_counts[stream.end_time.weekday()] += 1
-
-        week_start = (stream.end_time.date() - timedelta(days=stream.end_time.weekday()))
-        weekly_plays[week_start.isoformat()].append(stream)
+        stats["play_count"] += 1
+        stats["total_ms_played"] += record.ms_played
+        if record.ms_played >= 60_000:
+            stats["plays_over_60s"] += 1
 
     track_rows = []
     for track_key, stats in track_stats.items():
         play_count = int(stats["play_count"])
-        total_ms_played = int(stats["total_ms_played"])
+        total_ms = int(stats["total_ms_played"])
         plays_over_60s = int(stats["plays_over_60s"])
-        avg_ms_played = total_ms_played / play_count if play_count else 0.0
-        persistence_proxy = plays_over_60s / play_count if play_count else 0.0
+        avg_ms = total_ms / play_count if play_count else 0.0
+        persistence = plays_over_60s / play_count if play_count else 0.0
         track_rows.append(
             (
                 track_key,
                 stats["track_name"],
                 stats["artist_name"],
                 play_count,
-                total_ms_played,
-                avg_ms_played,
+                total_ms,
+                avg_ms,
                 plays_over_60s,
-                persistence_proxy,
+                persistence,
             )
         )
 
@@ -198,62 +203,102 @@ def compute_metrics(connection) -> None:
         track_rows,
     )
 
-    most_recent = max(stream.end_time for stream in streams)
-    repetition_score = _compute_repetition_score(
-        most_recent, (stream.end_time for stream in streams)
-    )
-    total_plays = len(streams)
+    total_plays = len(records)
     unique_tracks = len(track_stats)
     rotation = unique_tracks / total_plays if total_plays else 0.0
+    repetition_score = _recency_weighted_repetition_score(records)
 
-    connection.execute(
+    connection.executemany(
         """
-        INSERT INTO global_metrics (id, total_plays, unique_tracks, rotation, repetition_score)
-        VALUES (1, ?, ?, ?, ?)
+        INSERT INTO metrics_global (metric_name, metric_value)
+        VALUES (?, ?)
         """,
-        (total_plays, unique_tracks, rotation, repetition_score),
+        [
+            ("rotation", rotation),
+            ("repetition_score", repetition_score),
+        ],
     )
 
-    weekly_rows = []
-    for week_start, week_streams in weekly_plays.items():
-        week_total = len(week_streams)
-        week_unique = len({stream.track_key for stream in week_streams})
+    hour_counts: dict[int, int] = defaultdict(int)
+    weekday_counts: dict[int, int] = defaultdict(int)
+    for record in records:
+        hour_counts[record.end_time.hour] += 1
+        weekday_counts[record.end_time.weekday()] += 1
+
+    temporal_rows = [
+        ("global", None, "hour", hour, count)
+        for hour, count in sorted(hour_counts.items())
+    ] + [
+        ("global", None, "day_of_week", day, count)
+        for day, count in sorted(weekday_counts.items())
+    ]
+
+    weekly_groups: dict[str, list[StreamRecord]] = defaultdict(list)
+    for record in records:
+        weekly_groups[_week_start(record.end_time)].append(record)
+
+    weekly_metric_rows = []
+    weekly_temporal_rows = []
+    for week_start, week_records in weekly_groups.items():
+        week_total = len(week_records)
+        week_unique = len({record.track_key for record in week_records})
         week_rotation = week_unique / week_total if week_total else 0.0
-        week_latest = max(stream.end_time for stream in week_streams)
-        week_repetition = _compute_repetition_score(
-            week_latest, (stream.end_time for stream in week_streams)
-        )
-        weekly_rows.append(
-            (week_start, week_total, week_unique, week_rotation, week_repetition)
+        week_repetition = _recency_weighted_repetition_score(week_records)
+        weekly_metric_rows.extend(
+            [
+                (week_start, "rotation", week_rotation),
+                (week_start, "repetition_score", week_repetition),
+            ]
         )
 
-    connection.executemany(
-        """
-        INSERT INTO weekly_metrics (
-            week_start,
-            total_plays,
-            unique_tracks,
-            rotation,
-            repetition_score
+        week_hour_counts: dict[int, int] = defaultdict(int)
+        week_day_counts: dict[int, int] = defaultdict(int)
+        for record in week_records:
+            week_hour_counts[record.end_time.hour] += 1
+            week_day_counts[record.end_time.weekday()] += 1
+        weekly_temporal_rows.extend(
+            (
+                "weekly",
+                week_start,
+                "hour",
+                hour,
+                count,
+            )
+            for hour, count in sorted(week_hour_counts.items())
         )
-        VALUES (?, ?, ?, ?, ?)
-        """,
-        weekly_rows,
-    )
+        weekly_temporal_rows.extend(
+            (
+                "weekly",
+                week_start,
+                "day_of_week",
+                day,
+                count,
+            )
+            for day, count in sorted(week_day_counts.items())
+        )
 
-    connection.executemany(
-        """
-        INSERT INTO temporal_hourly (hour, play_count)
-        VALUES (?, ?)
-        """,
-        sorted(hourly_counts.items()),
-    )
-    connection.executemany(
-        """
-        INSERT INTO temporal_weekday (day_of_week, play_count)
-        VALUES (?, ?)
-        """,
-        sorted(weekday_counts.items()),
-    )
+    if temporal_rows or weekly_temporal_rows:
+        connection.executemany(
+            """
+            INSERT INTO temporal_distributions (
+                scope,
+                week_start,
+                bucket_type,
+                bucket,
+                play_count
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            temporal_rows + weekly_temporal_rows,
+        )
+
+    if weekly_metric_rows:
+        connection.executemany(
+            """
+            INSERT INTO metrics_weekly (week_start, metric_name, metric_value)
+            VALUES (?, ?, ?)
+            """,
+            weekly_metric_rows,
+        )
 
     connection.commit()
