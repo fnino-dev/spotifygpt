@@ -16,8 +16,13 @@ pytest
 - Source code lives in `src/spotifygpt`.
 - Tests live in `tests/`.
 
-## Trademark Notice
+## License
+
+This project is licensed under the GNU General Public License v3.0.
+
+## Trademark
 
 "SpotifyGPT" is a project name and trademark of its author.
-This license does not grant permission to use the name "SpotifyGPT"
-for commercial or promotional purposes without explicit permission.
+Use of the name "SpotifyGPT" for commercial purposes is not permitted
+without explicit written permission, even if the code is reused
+under the GPLv3 license.
