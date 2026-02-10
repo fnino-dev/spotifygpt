@@ -7,16 +7,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from spotifygpt.importer import init_db, load_streaming_history, store_streams
-from spotifygpt.pipeline import (
-    build_daily_mode,
-    build_weekly_radar,
-    classify_tracks,
-    compute_metrics,
-    ensure_non_empty_streams,
-    generate_alerts,
-    init_pipeline_tables,
-)
+from spotifygpt.alerts import detect_alerts
+from spotifygpt.importer import init_db, load_streaming_history, store_alerts, store_streams
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,16 +88,13 @@ def main(argv: list[str] | None = None) -> int:
 
     with sqlite3.connect(args.db) as connection:
         init_db(connection)
-        init_pipeline_tables(connection)
-        if not ensure_non_empty_streams(connection):
-            print("No stream data found. Run the import command first.", file=sys.stderr)
-            return 1
+        inserted = store_streams(connection, result.streams)
+        alerts = detect_alerts(result.streams)
+        alert_count = store_alerts(connection, alerts)
 
-        if args.command == "metrics":
-            metrics = compute_metrics(connection)
-            for metric in metrics:
-                print(f"{metric.name}: {metric.value}")
-            return 0
+    print(f"Imported {inserted} streams from {len(result.files)} files.")
+    if alert_count:
+        print(f"Detected {alert_count} alerts.")
 
         if args.command == "classify":
             classifications = classify_tracks(connection, threshold_ms=args.threshold_ms)
