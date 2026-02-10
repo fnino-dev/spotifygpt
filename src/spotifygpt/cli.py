@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from spotifygpt.auth import OAuthConfig, authenticate_browser_flow
-from spotifygpt.importer import init_db, load_streaming_history, store_streams
+from spotifygpt.importer import import_gdpr, init_db, load_streaming_history, store_streams
 from spotifygpt.token_store import TokenStore
 
 from spotifygpt.pipeline import (

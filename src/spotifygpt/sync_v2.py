@@ -166,13 +166,27 @@ class SyncService:
             );
             """
         )
+        ingest_run_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(ingest_runs)").fetchall()
+        }
+        required_columns = {
+            "source": "TEXT NOT NULL DEFAULT 'spotify_api'",
+            "since": "TEXT",
+            "completed_at": "TEXT",
+            "status": "TEXT NOT NULL DEFAULT 'RUNNING'",
+            "error_message": "TEXT",
+        }
+        for column, column_type in required_columns.items():
+            if column not in ingest_run_columns:
+                connection.execute(f"ALTER TABLE ingest_runs ADD COLUMN {column} {column_type}")
         connection.commit()
 
     def run_standard_sync(self, connection: sqlite3.Connection, since: str | None) -> SyncSummary:
         now = datetime.now(tz=timezone.utc).isoformat()
         run_id = connection.execute(
-            "INSERT INTO ingest_runs (mode, since, started_at, status) VALUES (?, ?, ?, ?)",
-            ("STANDARD", since, now, "RUNNING"),
+            "INSERT INTO ingest_runs (mode, source, since, started_at, status) VALUES (?, ?, ?, ?, ?)",
+            ("STANDARD", "spotify_api", since, now, "RUNNING"),
         ).lastrowid
         connection.commit()
 
