@@ -166,15 +166,44 @@ class SyncService:
             );
             """
         )
+        ingest_columns = self._ingest_runs_columns(connection)
+        if "since" not in ingest_columns:
+            connection.execute("ALTER TABLE ingest_runs ADD COLUMN since TEXT")
+        if "completed_at" not in ingest_columns:
+            connection.execute("ALTER TABLE ingest_runs ADD COLUMN completed_at TEXT")
+        if "status" not in ingest_columns:
+            connection.execute("ALTER TABLE ingest_runs ADD COLUMN status TEXT")
+        if "error_message" not in ingest_columns:
+            connection.execute("ALTER TABLE ingest_runs ADD COLUMN error_message TEXT")
         connection.commit()
+
+    def _ingest_runs_columns(self, connection: sqlite3.Connection) -> set[str]:
+        return {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(ingest_runs)").fetchall()
+        }
 
     def run_standard_sync(self, connection: sqlite3.Connection, since: str | None) -> SyncSummary:
         now = datetime.now(tz=timezone.utc).isoformat()
+        ingest_columns = self._ingest_runs_columns(connection)
+
+        insert_values: dict[str, str | None] = {"mode": "STANDARD", "started_at": now}
+        if "since" in ingest_columns:
+            insert_values["since"] = since
+        if "source" in ingest_columns:
+            insert_values["source"] = "spotify_api"
+        if "status" in ingest_columns:
+            insert_values["status"] = "RUNNING"
+
+        columns = ", ".join(insert_values.keys())
+        placeholders = ", ".join("?" for _ in insert_values)
         run_id = connection.execute(
-            "INSERT INTO ingest_runs (mode, since, started_at, status) VALUES (?, ?, ?, ?)",
-            ("STANDARD", since, now, "RUNNING"),
+            f"INSERT INTO ingest_runs ({columns}) VALUES ({placeholders})",
+            tuple(insert_values.values()),
         ).lastrowid
         connection.commit()
+
+        finished_column = "completed_at" if "completed_at" in ingest_columns else ("finished_at" if "finished_at" in ingest_columns else None)
 
         try:
             saved_count = self._ingest_saved_tracks(connection, since)
@@ -182,10 +211,20 @@ class SyncService:
             top_count = self._ingest_top_items(connection, run_id)
             recent_count = self._ingest_recently_played(connection, since)
 
-            connection.execute(
-                "UPDATE ingest_runs SET completed_at = ?, status = ? WHERE id = ?",
-                (datetime.now(tz=timezone.utc).isoformat(), "SUCCESS", run_id),
-            )
+            updates: list[str] = []
+            params: list[str] = []
+            if finished_column:
+                updates.append(f"{finished_column} = ?")
+                params.append(datetime.now(tz=timezone.utc).isoformat())
+            if "status" in ingest_columns:
+                updates.append("status = ?")
+                params.append("SUCCESS")
+            if updates:
+                params.append(str(run_id))
+                connection.execute(
+                    f"UPDATE ingest_runs SET {', '.join(updates)} WHERE id = ?",
+                    params,
+                )
             connection.commit()
             return SyncSummary(
                 run_id=run_id,
@@ -195,10 +234,23 @@ class SyncService:
                 recent_tracks=recent_count,
             )
         except Exception as exc:
-            connection.execute(
-                "UPDATE ingest_runs SET completed_at = ?, status = ?, error_message = ? WHERE id = ?",
-                (datetime.now(tz=timezone.utc).isoformat(), "FAILED", str(exc), run_id),
-            )
+            updates = []
+            params = []
+            if finished_column:
+                updates.append(f"{finished_column} = ?")
+                params.append(datetime.now(tz=timezone.utc).isoformat())
+            if "status" in ingest_columns:
+                updates.append("status = ?")
+                params.append("FAILED")
+            if "error_message" in ingest_columns:
+                updates.append("error_message = ?")
+                params.append(str(exc))
+            if updates:
+                params.append(str(run_id))
+                connection.execute(
+                    f"UPDATE ingest_runs SET {', '.join(updates)} WHERE id = ?",
+                    params,
+                )
             connection.commit()
             raise
 
