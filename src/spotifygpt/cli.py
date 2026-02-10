@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
 
         with sqlite3.connect(args.db) as connection:
             init_db(connection)
-            init_pipeline_tables(connection)
+            # init_pipeline_tables(connection)  # TODO: create pipeline tables in later issues
             inserted = store_streams(connection, result.streams)
 
         print(f"Imported {inserted} streams from {len(result.files)} files.")
