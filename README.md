@@ -40,6 +40,10 @@ python -m spotifygpt daily-mode ./spotifygpt.db
 
 # Generate alerts
 python -m spotifygpt alerts ./spotifygpt.db
+
+# Run Spotify API standard sync (Issue #23 scope)
+python -m spotifygpt sync ./spotifygpt.db --token "$SPOTIFY_TOKEN" --since 2026-01-01T00:00:00Z
+
 ```
 
 ---

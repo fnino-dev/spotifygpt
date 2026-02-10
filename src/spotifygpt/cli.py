@@ -17,6 +17,7 @@ from spotifygpt.pipeline import (
     generate_alerts,
     init_pipeline_tables,
 )
+from spotifygpt.sync_v2 import SpotifyAPIClient, SyncService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,6 +64,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     alerts_parser.add_argument("db", type=Path, help="SQLite database path")
 
+    sync_parser = subparsers.add_parser(
+        "sync", help="Run Spotify API standard ingestion (v2)."
+    )
+    sync_parser.add_argument("db", type=Path, help="SQLite database path")
+    sync_parser.add_argument(
+        "--token",
+        required=True,
+        help="Spotify OAuth access token with user-library-read, playlist-read-private, user-top-read, user-read-recently-played.",
+    )
+    sync_parser.add_argument(
+        "--since",
+        help="ISO-8601 timestamp filter for incremental ingest.",
+    )
+
     return parser
 
 
@@ -106,6 +121,18 @@ def main(argv: list[str] | None = None) -> int:
 
     with sqlite3.connect(args.db) as connection:
         init_db(connection)
+        if args.command == "sync":
+            service = SyncService(SpotifyAPIClient(token=args.token))
+            service.init_db(connection)
+            summary = service.run_standard_sync(connection, args.since)
+            print(
+                "Sync run "
+                f"#{summary.run_id} complete: saved={summary.saved_tracks}, "
+                f"playlist_tracks={summary.playlist_tracks}, top_items={summary.top_items}, "
+                f"recent={summary.recent_tracks}"
+            )
+            return 0
+
         _ensure_pipeline_alerts_table(connection)
         init_pipeline_tables(connection)
 
