@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
-from spotifygpt.importer import import_gdpr, init_db, load_streaming_history, store_streams
+from spotifygpt.auth import OAuthConfig, authenticate_browser_flow
+from spotifygpt.importer import init_db, load_streaming_history, store_streams
+from spotifygpt.token_store import TokenStore
+
 from spotifygpt.pipeline import (
     build_daily_mode,
     build_weekly_radar,
@@ -17,6 +21,7 @@ from spotifygpt.pipeline import (
     generate_alerts,
     init_pipeline_tables,
 )
+from spotifygpt.sync_v2 import SpotifyAPIClient, SyncService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,9 +79,47 @@ def build_parser() -> argparse.ArgumentParser:
     )
     alerts_parser.add_argument("db", type=Path, help="SQLite database path")
 
+    sync_parser = subparsers.add_parser(
+        "sync", help="Run Spotify API standard ingestion (v2)."
+    )
+    sync_parser.add_argument("db", type=Path, help="SQLite database path")
+    sync_parser.add_argument(
+        "--token",
+        required=True,
+        help="Spotify OAuth access token with user-library-read, playlist-read-private, user-top-read, user-read-recently-played.",
+    )
+    sync_parser.add_argument(
+        "--since",
+        help="ISO-8601 timestamp filter for incremental ingest.",
+    )
+
+    auth_parser = subparsers.add_parser(
+        "auth", help="Run Spotify OAuth and persist access/refresh tokens."
+    )
+    auth_parser.add_argument(
+        "--client-id",
+        default=os.getenv("SPOTIFY_CLIENT_ID"),
+        help="Spotify app client id. Defaults to SPOTIFY_CLIENT_ID env var.",
+    )
+    auth_parser.add_argument(
+        "--redirect-uri",
+        default="http://127.0.0.1:8888/callback",
+        help="OAuth redirect URI configured in Spotify app settings.",
+    )
+    auth_parser.add_argument(
+        "--scope",
+        default="user-read-recently-played user-top-read",
+        help="Space-separated Spotify OAuth scopes.",
+    )
+    auth_parser.add_argument(
+        "--token-store",
+        type=Path,
+        default=Path.home() / ".spotifygpt" / "tokens.json",
+        help="Path where tokens are stored with mode 600.",
+    )
+
     return parser
-
-
+    
 def _ensure_pipeline_alerts_table(connection: sqlite3.Connection) -> None:
     columns = {
         row[1]
@@ -91,6 +134,24 @@ def _ensure_pipeline_alerts_table(connection: sqlite3.Connection) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if args.command == "auth":
+        if not args.client_id:
+            print("Missing client id. Set --client-id or SPOTIFY_CLIENT_ID.", file=sys.stderr)
+            return 1
+
+        config = OAuthConfig(
+            client_id=args.client_id,
+            redirect_uri=args.redirect_uri,
+            scope=args.scope,
+        )
+        print("Starting OAuth browser flow...")
+        token = authenticate_browser_flow(config)
+        store = TokenStore(args.token_store)
+        stored = store.store_from_oauth(token)
+        print(f"Authenticated successfully. Token stored at {store.path}.")
+        print(f"Access token expires at unix timestamp {stored.expires_at}.")
+        return 0
 
     if args.command == "import":
         result = load_streaming_history(args.input)
@@ -133,6 +194,18 @@ def main(argv: list[str] | None = None) -> int:
 
     with sqlite3.connect(args.db) as connection:
         init_db(connection)
+        if args.command == "sync":
+            service = SyncService(SpotifyAPIClient(token=args.token))
+            service.init_db(connection)
+            summary = service.run_standard_sync(connection, args.since)
+            print(
+                "Sync run "
+                f"#{summary.run_id} complete: saved={summary.saved_tracks}, "
+                f"playlist_tracks={summary.playlist_tracks}, top_items={summary.top_items}, "
+                f"recent={summary.recent_tracks}"
+            )
+            return 0
+
         _ensure_pipeline_alerts_table(connection)
         init_pipeline_tables(connection)
 

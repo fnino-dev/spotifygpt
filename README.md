@@ -23,6 +23,9 @@ pytest
 ## CLI usage
 
 ```bash
+# Authenticate against Spotify and persist tokens securely
+python -m spotifygpt auth --client-id "$SPOTIFY_CLIENT_ID"
+
 # Import streaming history into SQLite
 python -m spotifygpt import data/sample ./spotifygpt.db
 
@@ -43,11 +46,19 @@ python -m spotifygpt daily-mode ./spotifygpt.db
 
 # Generate alerts
 python -m spotifygpt alerts ./spotifygpt.db
+
+# Run Spotify API standard sync (Issue #23 scope)
+python -m spotifygpt sync ./spotifygpt.db --token "$SPOTIFY_TOKEN" --since 2026-01-01T00:00:00Z
+
 ```
 
 ---
 
 ## Development
+
+The auth command uses Spotify OAuth (authorization code + PKCE) and stores access/refresh
+tokens at `~/.spotifygpt/tokens.json` with file mode `600`. When access tokens expire,
+`TokenStore.get_access_token(...)` refreshes them automatically using the refresh token.
 
 - Source code lives in `src/spotifygpt`
 - Tests live in `tests/`
