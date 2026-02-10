@@ -1,0 +1,23 @@
+[
+  {
+    "name": "Morning Mix",
+    "tracks": [
+      {
+        "added_at": "2026-01-03T08:00:00Z",
+        "track": {
+          "name": "Song A",
+          "artists": [{"name": "Artist X"}],
+          "uri": "spotify:track:111"
+        }
+      },
+      {
+        "added_at": "2026-01-03T08:10:00Z",
+        "track": {
+          "name": "Song B",
+          "artists": [{"name": "Artist Y"}],
+          "uri": "spotify:track:222"
+        }
+      }
+    ]
+  }
+]
