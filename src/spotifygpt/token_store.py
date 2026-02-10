@@ -52,7 +52,8 @@ class TokenStore:
             "expires_at": token.expires_at,
         }
         self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
+        if os.name == "posix":
+            os.chmod(self.path, stat.S_IRUSR | stat.S_IWUSR)
 
     def store_from_oauth(self, token: OAuthTokenResponse, fallback_refresh_token: str | None = None) -> StoredToken:
         refresh_token = token.refresh_token or fallback_refresh_token
