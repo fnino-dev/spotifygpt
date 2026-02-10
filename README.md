@@ -50,7 +50,9 @@ python -m spotifygpt alerts ./spotifygpt.db
 # Run Spotify API standard sync (Issue #23 scope)
 python -m spotifygpt sync ./spotifygpt.db --token "$SPOTIFY_TOKEN" --since 2026-01-01T00:00:00Z
 
-```
+# Backfill missing audio features for used tracks
+python -m spotifygpt backfill-features ./spotifygpt.db --limit 100 --since 2026-01-01T00:00:00
+
 
 ---
 
@@ -116,5 +118,6 @@ explicit written permission from the author.
 
 ## Attribution
 
-Copyright (c) 2026 Fernando Niño  
+Copyright (c) 2026 Fernando Niño
 All rights reserved.
+```
