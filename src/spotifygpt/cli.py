@@ -67,7 +67,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     alerts_parser.add_argument("db", type=Path, help="SQLite database path")
 
-codex/github-mention-ingest-v2-#2-standard-sync-saved,-playlis
     sync_parser = subparsers.add_parser(
         "sync", help="Run Spotify API standard ingestion (v2)."
     )
@@ -106,12 +105,9 @@ codex/github-mention-ingest-v2-#2-standard-sync-saved,-playlis
         default=Path.home() / ".spotifygpt" / "tokens.json",
         help="Path where tokens are stored with mode 600.",
     )
-main
-)
 
     return parser
-
-
+    
 def _ensure_pipeline_alerts_table(connection: sqlite3.Connection) -> None:
     columns = {
         row[1]
