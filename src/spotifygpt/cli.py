@@ -11,6 +11,7 @@ from pathlib import Path
 from spotifygpt.auth import OAuthConfig, authenticate_browser_flow
 from spotifygpt.importer import init_db, load_streaming_history, store_streams
 from spotifygpt.token_store import TokenStore
+
 from spotifygpt.pipeline import (
     build_daily_mode,
     build_weekly_radar,
@@ -34,6 +35,17 @@ def build_parser() -> argparse.ArgumentParser:
         "input", type=Path, help="Folder containing StreamingHistory*.json"
     )
     import_parser.add_argument("db", type=Path, help="SQLite database path")
+
+    import_gdpr_parser = subparsers.add_parser(
+        "import-gdpr",
+        help="Import Spotify GDPR extended streaming history (folder or zip).",
+    )
+    import_gdpr_parser.add_argument(
+        "input",
+        type=Path,
+        help="Path to GDPR export zip file or extracted folder",
+    )
+    import_gdpr_parser.add_argument("db", type=Path, help="SQLite database path")
 
     metrics_parser = subparsers.add_parser("metrics", help="Compute summary metrics.")
     metrics_parser.add_argument("db", type=Path, help="SQLite database path")
@@ -162,6 +174,22 @@ def main(argv: list[str] | None = None) -> int:
                     else str(error.file)
                 )
                 print(f"- {location}: {error.message}", file=sys.stderr)
+        return 0
+
+    if args.command == "import-gdpr":
+        with sqlite3.connect(args.db) as connection:
+            init_db(connection)
+            result = import_gdpr(connection, args.input)
+
+        if not result.files:
+            print("No endsong JSON files found.", file=sys.stderr)
+            return 1
+
+        print(
+            "Imported "
+            f"{result.rows_inserted} listening events "
+            f"from {len(result.files)} files (rows seen: {result.rows_seen}, run_id: {result.run_id})."
+        )
         return 0
 
     with sqlite3.connect(args.db) as connection:

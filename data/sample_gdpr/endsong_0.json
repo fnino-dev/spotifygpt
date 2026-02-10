@@ -1,0 +1,46 @@
+[
+  {
+    "ts": "2024-01-01T10:00:00Z",
+    "username": "user",
+    "platform": "android",
+    "ms_played": 120000,
+    "conn_country": "US",
+    "master_metadata_track_name": "Track One",
+    "master_metadata_album_artist_name": "Artist A",
+    "master_metadata_album_album_name": "Album A",
+    "spotify_track_uri": "spotify:track:111",
+    "reason_start": "trackdone",
+    "reason_end": "trackdone"
+  },
+  {
+    "ts": "2024-01-01T10:00:00Z",
+    "username": "user",
+    "platform": "android",
+    "ms_played": 120000,
+    "conn_country": "US",
+    "master_metadata_track_name": "Track One",
+    "master_metadata_album_artist_name": "Artist A",
+    "master_metadata_album_album_name": "Album A",
+    "spotify_track_uri": "spotify:track:111",
+    "reason_start": "trackdone",
+    "reason_end": "trackdone"
+  },
+  {
+    "ts": "2024-01-02T11:00:00Z",
+    "username": "user",
+    "platform": "web_player",
+    "ms_played": 30000,
+    "conn_country": "US",
+    "master_metadata_track_name": "Track Two",
+    "master_metadata_album_artist_name": "Artist B",
+    "master_metadata_album_album_name": "Album B",
+    "spotify_track_uri": "spotify:track:222",
+    "reason_start": "clickrow",
+    "reason_end": "fwdbtn"
+  },
+  {
+    "ts": "2024-01-03T11:00:00Z",
+    "ms_played": 1000,
+    "episode_name": "Podcast Episode"
+  }
+]
