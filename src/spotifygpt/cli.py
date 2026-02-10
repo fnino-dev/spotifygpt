@@ -10,13 +10,12 @@ from pathlib import Path
 
 from spotifygpt.auth import OAuthConfig, authenticate_browser_flow
 from spotifygpt.importer import import_gdpr, init_db, load_streaming_history, store_streams
+from spotifygpt.ingest_status import collect_ingest_status, render_ingest_status
 from spotifygpt.manual_import import (
     init_manual_import_tables,
     load_manual_payload,
     store_manual_payload,
 )
-from spotifygpt.token_store import TokenStore
-
 from spotifygpt.pipeline import (
     build_daily_mode,
     build_weekly_radar,
@@ -27,6 +26,7 @@ from spotifygpt.pipeline import (
     init_pipeline_tables,
 )
 from spotifygpt.sync_v2 import SpotifyAPIClient, SyncService
+from spotifygpt.token_store import TokenStore
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -113,6 +113,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--since",
         help="ISO-8601 timestamp filter for incremental ingest.",
     )
+
+    ingest_status_parser = subparsers.add_parser(
+        "ingest-status", help="Print ingest V2 status and sanity checks."
+    )
+    ingest_status_parser.add_argument("db", type=Path, help="SQLite database path")
 
     auth_parser = subparsers.add_parser(
         "auth", help="Run Spotify OAuth and persist access/refresh tokens."
@@ -235,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
 
     with sqlite3.connect(args.db) as connection:
         init_db(connection)
+
         if args.command == "sync":
             service = SyncService(SpotifyAPIClient(token=args.token))
             service.init_db(connection)
@@ -245,6 +251,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"playlist_tracks={summary.playlist_tracks}, top_items={summary.top_items}, "
                 f"recent={summary.recent_tracks}"
             )
+            return 0
+
+        if args.command == "ingest-status":
+            status = collect_ingest_status(connection)
+            print(render_ingest_status(status))
             return 0
 
         _ensure_pipeline_alerts_table(connection)
