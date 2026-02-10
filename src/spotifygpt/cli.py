@@ -185,8 +185,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional bearer token for audio-feature endpoint.",
     )
 
-    )
-
     return parser
 
 
