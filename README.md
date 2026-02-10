@@ -26,6 +26,9 @@ pytest
 # Import streaming history into SQLite
 python -m spotifygpt import data/sample ./spotifygpt.db
 
+# Import GDPR extended streaming history (zip or folder)
+python -m spotifygpt import-gdpr data/sample_gdpr ./spotifygpt.db
+
 # Compute metrics
 python -m spotifygpt metrics ./spotifygpt.db
 
