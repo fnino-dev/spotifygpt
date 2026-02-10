@@ -31,6 +31,9 @@ def test_store_and_load_token_with_secure_permissions(tmp_path: Path) -> None:
     mode = stat.S_IMODE(os.stat(path).st_mode)
     if os.name == "posix":
         assert mode == stat.S_IRUSR | stat.S_IWUSR
+    else:
+        assert mode & stat.S_IRUSR
+        assert mode & stat.S_IWUSR
 
 
 def test_get_access_token_refreshes_when_expired(tmp_path: Path, monkeypatch) -> None:
