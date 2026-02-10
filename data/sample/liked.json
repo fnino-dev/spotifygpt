@@ -1,0 +1,18 @@
+[
+  {
+    "added_at": "2026-01-01T10:00:00Z",
+    "track": {
+      "name": "Song A",
+      "artists": [{"name": "Artist X"}],
+      "uri": "spotify:track:111"
+    }
+  },
+  {
+    "added_at": "2026-01-02T10:00:00Z",
+    "track": {
+      "name": "Song C",
+      "artists": [{"name": "Artist Z"}],
+      "uri": "spotify:track:333"
+    }
+  }
+]
