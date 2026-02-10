@@ -10,6 +10,11 @@ from pathlib import Path
 
 from spotifygpt.auth import OAuthConfig, authenticate_browser_flow
 from spotifygpt.importer import import_gdpr, init_db, load_streaming_history, store_streams
+from spotifygpt.manual_import import (
+    init_manual_import_tables,
+    load_manual_payload,
+    store_manual_payload,
+)
 from spotifygpt.token_store import TokenStore
 
 from spotifygpt.pipeline import (
@@ -46,6 +51,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to GDPR export zip file or extracted folder",
     )
     import_gdpr_parser.add_argument("db", type=Path, help="SQLite database path")
+
+    manual_parser = subparsers.add_parser(
+        "import-manual", help="Import manually exported liked songs and playlists."
+    )
+    manual_parser.add_argument(
+        "--liked", required=True, type=Path, help="Path to liked songs JSON export"
+    )
+    manual_parser.add_argument(
+        "--playlists", required=True, type=Path, help="Path to playlists JSON export"
+    )
+    manual_parser.add_argument(
+        "--db",
+        default=Path("spotifygpt.db"),
+        type=Path,
+        help="SQLite database path (default: ./spotifygpt.db)",
+    )
 
     metrics_parser = subparsers.add_parser("metrics", help="Compute summary metrics.")
     metrics_parser.add_argument("db", type=Path, help="SQLite database path")
@@ -119,7 +140,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     return parser
-    
+
+
 def _ensure_pipeline_alerts_table(connection: sqlite3.Connection) -> None:
     columns = {
         row[1]
@@ -137,7 +159,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "auth":
         if not args.client_id:
-            print("Missing client id. Set --client-id or SPOTIFY_CLIENT_ID.", file=sys.stderr)
+            print(
+                "Missing client id. Set --client-id or SPOTIFY_CLIENT_ID.",
+                file=sys.stderr,
+            )
             return 1
 
         config = OAuthConfig(
@@ -189,6 +214,22 @@ def main(argv: list[str] | None = None) -> int:
             "Imported "
             f"{result.rows_inserted} listening events "
             f"from {len(result.files)} files (rows seen: {result.rows_seen}, run_id: {result.run_id})."
+        )
+        return 0
+
+    if args.command == "import-manual":
+        payload = load_manual_payload(args.liked, args.playlists)
+        with sqlite3.connect(args.db) as connection:
+            init_db(connection)
+            init_manual_import_tables(connection)
+            result = store_manual_payload(connection, payload)
+
+        print(
+            "Imported manual data: "
+            f"{result.tracks} tracks, "
+            f"{result.library} library rows, "
+            f"{result.playlists} playlists, "
+            f"{result.playlist_tracks} playlist tracks."
         )
         return 0
 
