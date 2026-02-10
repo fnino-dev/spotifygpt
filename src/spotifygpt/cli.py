@@ -6,9 +6,16 @@ import argparse
 import os
 import sqlite3
 import sys
+import os
+from datetime import datetime
 from pathlib import Path
 
 from spotifygpt.auth import OAuthConfig, authenticate_browser_flow
+from spotifygpt.audio_features import (
+    HttpAudioFeatureProvider,
+    backfill_audio_features,
+    init_audio_feature_tables,
+)
 from spotifygpt.importer import import_gdpr, init_db, load_streaming_history, store_streams
 from spotifygpt.ingest_status import collect_ingest_status, render_ingest_status
 from spotifygpt.manual_import import (
@@ -16,6 +23,7 @@ from spotifygpt.manual_import import (
     load_manual_payload,
     store_manual_payload,
 )
+
 from spotifygpt.pipeline import (
     build_daily_mode,
     build_weekly_radar,
@@ -144,6 +152,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path where tokens are stored with mode 600.",
     )
 
+    backfill_parser = subparsers.add_parser(
+        "backfill-features",
+        help="Backfill missing audio features for tracks used in streams.",
+    )
+    backfill_parser.add_argument("db", type=Path, help="SQLite database path")
+    backfill_parser.add_argument(
+        "--limit", type=int, default=None, help="Maximum number of tracks to backfill."
+    )
+    backfill_parser.add_argument(
+        "--since",
+        type=str,
+        default=None,
+        help="Only consider streams at or after this ISO-8601 timestamp.",
+    )
+    backfill_parser.add_argument(
+        "--requests-per-second",
+        type=float,
+        default=5.0,
+        help="Maximum outbound audio-feature requests per second.",
+    )
+    backfill_parser.add_argument(
+        "--endpoint",
+        type=str,
+        default=None,
+        help="Audio-feature HTTP endpoint. Defaults to SPOTIFYGPT_AUDIO_FEATURES_ENDPOINT.",
+    )
+    backfill_parser.add_argument(
+        "--auth-token",
+        type=str,
+        default=None,
+        help="Optional bearer token for audio-feature endpoint.",
+    )
+
+    )
+
     return parser
 
 
@@ -156,6 +199,22 @@ def _ensure_pipeline_alerts_table(connection: sqlite3.Connection) -> None:
     if columns and columns != expected:
         connection.execute("DROP TABLE IF EXISTS alerts")
         connection.commit()
+
+
+def _is_valid_iso8601(value: str) -> bool:
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _build_audio_feature_provider(args: argparse.Namespace) -> HttpAudioFeatureProvider | None:
+    endpoint = args.endpoint or os.environ.get("SPOTIFYGPT_AUDIO_FEATURES_ENDPOINT")
+    if endpoint is None:
+        return None
+    auth_token = args.auth_token or os.environ.get("SPOTIFYGPT_AUDIO_FEATURES_TOKEN")
+    return HttpAudioFeatureProvider(endpoint=endpoint, auth_token=auth_token)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -260,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
 
         _ensure_pipeline_alerts_table(connection)
         init_pipeline_tables(connection)
+        init_audio_feature_tables(connection)
 
         if not ensure_non_empty_streams(connection):
             print("No streams available. Run the import command first.", file=sys.stderr)
@@ -293,6 +353,34 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "alerts":
             alerts = generate_alerts(connection)
             print(f"Generated {len(alerts)} alerts.")
+            return 0
+
+        if args.command == "backfill-features":
+            if args.since is not None and not _is_valid_iso8601(args.since):
+                print("Invalid --since value. Use ISO-8601 format.", file=sys.stderr)
+                return 1
+
+            provider = _build_audio_feature_provider(args)
+            if provider is None:
+                print(
+                    "Audio-feature endpoint not configured. Set --endpoint or "
+                    "SPOTIFYGPT_AUDIO_FEATURES_ENDPOINT.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            result = backfill_audio_features(
+                connection,
+                provider=provider,
+                limit=args.limit,
+                since=args.since,
+                requests_per_second=args.requests_per_second,
+            )
+            print(
+                "Backfilled audio features "
+                f"(scanned={result.scanned}, inserted={result.inserted}, "
+                f"cache_hits={result.cache_hits}, api_calls={result.api_calls})."
+            )
             return 0
 
     return 1
