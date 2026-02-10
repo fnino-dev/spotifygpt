@@ -8,6 +8,8 @@ import json
 from pathlib import Path
 from typing import Iterable
 
+from spotifygpt.alerts import Alert
+
 
 @dataclass(frozen=True)
 class Stream:
@@ -128,6 +130,16 @@ def init_db(connection) -> None:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS alerts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_type TEXT NOT NULL,
+            detected_at TEXT NOT NULL,
+            evidence JSON NOT NULL
+        )
+        """
+    )
     connection.commit()
 
 
@@ -148,6 +160,21 @@ def store_streams(connection, streams: Iterable[Stream]) -> int:
         """
         INSERT INTO streams (track_name, artist_name, end_time, ms_played, track_key)
         VALUES (?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    connection.commit()
+    return len(rows)
+
+
+def store_alerts(connection, alerts: Iterable[Alert]) -> int:
+    rows = [(alert.alert_type, alert.detected_at, alert.serialize_evidence()) for alert in alerts]
+    if not rows:
+        return 0
+    connection.executemany(
+        """
+        INSERT INTO alerts (alert_type, detected_at, evidence)
+        VALUES (?, ?, ?)
         """,
         rows,
     )
