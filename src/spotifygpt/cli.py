@@ -107,7 +107,7 @@ codex/github-mention-ingest-v2-#2-standard-sync-saved,-playlis
         help="Path where tokens are stored with mode 600.",
     )
 main
-    )
+    
 
     return parser
 
