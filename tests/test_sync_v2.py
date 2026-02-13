@@ -4,7 +4,7 @@ from pathlib import Path
 import sqlite3
 
 from spotifygpt.cli import main
-from spotifygpt.sync_v2 import SyncService
+from spotifygpt.sync_v2 import SpotifyAPIError, SyncService
 
 
 class FakeSpotifyClient:
@@ -142,3 +142,43 @@ def test_sync_cli_command(monkeypatch, tmp_path: Path) -> None:
         run = connection.execute("SELECT mode, since, status FROM ingest_runs").fetchone()
 
     assert run == ("STANDARD", "2026-01-01T00:00:00Z", "SUCCESS")
+
+
+def test_standard_sync_skips_playlist_tracks_forbidden(tmp_path: Path, caplog) -> None:
+    class ForbiddenPlaylistClient(FakeSpotifyClient):
+        def get_playlists(self):
+            return [
+                {"id": "pl-1", "name": "Forbidden", "owner": {"id": "owner-1"}},
+                {"id": "pl-2", "name": "Allowed", "owner": {"id": "owner-1"}},
+            ]
+
+        def get_playlist_tracks(self, playlist_id: str):
+            if playlist_id == "pl-1":
+                raise SpotifyAPIError("Spotify API request failed (403)", status_code=403)
+            return [
+                {
+                    "added_at": "2026-01-05T10:00:00Z",
+                    "track": {
+                        "id": "track-allowed",
+                        "name": "Allowed Song",
+                        "artists": [{"name": "Artist A"}],
+                    },
+                }
+            ]
+
+    db_path = tmp_path / "sync-forbidden.db"
+    service = SyncService(ForbiddenPlaylistClient())
+
+    with sqlite3.connect(db_path) as connection:
+        service.init_db(connection)
+        summary = service.run_standard_sync(connection, since="2026-01-01T00:00:00Z")
+
+        playlist_tracks_count = connection.execute("SELECT COUNT(*) FROM playlist_tracks").fetchone()[0]
+        playlist_count = connection.execute("SELECT COUNT(*) FROM playlists").fetchone()[0]
+        run_status = connection.execute("SELECT status FROM ingest_runs ORDER BY id DESC").fetchone()[0]
+
+    assert summary.playlist_tracks == 1
+    assert playlist_tracks_count == 1
+    assert playlist_count == 2
+    assert run_status == "SUCCESS"
+    assert "Skipping playlist due to 403 Forbidden: id=pl-1 name=Forbidden" in caplog.text

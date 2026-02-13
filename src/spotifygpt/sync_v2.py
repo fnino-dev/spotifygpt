@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import sqlite3
 import time
 from typing import Any
@@ -12,6 +13,15 @@ from urllib import error, parse, request
 
 
 TOP_TIME_RANGES = ("short_term", "medium_term", "long_term")
+LOGGER = logging.getLogger(__name__)
+
+
+class SpotifyAPIError(RuntimeError):
+    """Spotify API failure with optional HTTP status code."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(frozen=True)
@@ -53,9 +63,12 @@ class SpotifyAPIClient:
                     wait_seconds = max(1.0, float(retry_after))
                     time.sleep(wait_seconds)
                     continue
-                raise RuntimeError(f"Spotify API request failed ({exc.code}) for {url}") from exc
+                raise SpotifyAPIError(
+                    f"Spotify API request failed ({exc.code}) for {url}",
+                    status_code=exc.code,
+                ) from exc
             except error.URLError as exc:
-                raise RuntimeError(f"Spotify API request failed for {url}: {exc}") from exc
+                raise SpotifyAPIError(f"Spotify API request failed for {url}: {exc}") from exc
 
     def _paginate(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         merged = dict(params or {})
@@ -290,15 +303,27 @@ class SyncService:
         inserted = 0
         for playlist in playlists:
             playlist_id = playlist.get("id")
+            playlist_name = str(playlist.get("name", ""))
             owner = playlist.get("owner") or {}
             owner_id = owner.get("id") if isinstance(owner, dict) else None
             if not isinstance(playlist_id, str) or not isinstance(owner_id, str):
                 continue
             connection.execute(
                 "INSERT OR REPLACE INTO playlists (id, name, owner_id) VALUES (?, ?, ?)",
-                (playlist_id, str(playlist.get("name", "")), owner_id),
+                (playlist_id, playlist_name, owner_id),
             )
-            for idx, item in enumerate(self._client.get_playlist_tracks(playlist_id)):
+            try:
+                playlist_tracks = self._client.get_playlist_tracks(playlist_id)
+            except SpotifyAPIError as exc:
+                if exc.status_code == 403:
+                    LOGGER.warning(
+                        "Skipping playlist due to 403 Forbidden: id=%s name=%s",
+                        playlist_id,
+                        playlist_name,
+                    )
+                    continue
+                raise
+            for idx, item in enumerate(playlist_tracks):
                 track = item.get("track") or {}
                 if not isinstance(track, dict):
                     continue
