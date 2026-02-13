@@ -182,3 +182,57 @@ def test_standard_sync_skips_playlist_tracks_forbidden(tmp_path: Path, caplog) -
     assert playlist_count == 2
     assert run_status == "SUCCESS"
     assert "Skipping playlist due to 403 Forbidden: id=pl-1 name=Forbidden" in caplog.text
+
+
+def test_sync_cli_skips_forbidden_playlist_and_completes(monkeypatch, tmp_path: Path) -> None:
+    db_path = tmp_path / "cli-sync-forbidden.db"
+
+    class ForbiddenPlaylistClient(FakeSpotifyClient):
+        def get_playlists(self):
+            return [
+                {"id": "pl-1", "name": "Forbidden", "owner": {"id": "owner-1"}},
+                {"id": "pl-2", "name": "Allowed", "owner": {"id": "owner-1"}},
+            ]
+
+        def get_playlist_tracks(self, playlist_id: str):
+            if playlist_id == "pl-1":
+                raise SpotifyAPIError("Spotify API request failed (403)", status_code=403)
+            return [
+                {
+                    "added_at": "2026-01-05T10:00:00Z",
+                    "track": {
+                        "id": "track-allowed",
+                        "name": "Allowed Song",
+                        "artists": [{"name": "Artist A"}],
+                    },
+                }
+            ]
+
+    class PatchedService(SyncService):
+        def __init__(self, _client):
+            super().__init__(ForbiddenPlaylistClient())
+
+    monkeypatch.setattr("spotifygpt.cli.SyncService", PatchedService)
+    monkeypatch.setattr("spotifygpt.cli.SpotifyAPIClient", lambda token: object())
+
+    exit_code = main(
+        [
+            "sync",
+            str(db_path),
+            "--token",
+            "dummy-token",
+            "--since",
+            "2026-01-01T00:00:00Z",
+        ]
+    )
+
+    assert exit_code == 0
+
+    with sqlite3.connect(db_path) as connection:
+        run_status = connection.execute("SELECT status FROM ingest_runs").fetchone()[0]
+        playlist_tracks_count = connection.execute("SELECT COUNT(*) FROM playlist_tracks").fetchone()[0]
+        playlist_count = connection.execute("SELECT COUNT(*) FROM playlists").fetchone()[0]
+
+    assert run_status == "SUCCESS"
+    assert playlist_tracks_count == 1
+    assert playlist_count == 2
