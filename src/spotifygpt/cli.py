@@ -6,7 +6,6 @@ import argparse
 import os
 import sqlite3
 import sys
-import os
 from datetime import datetime
 from pathlib import Path
 
@@ -23,7 +22,6 @@ from spotifygpt.manual_import import (
     load_manual_payload,
     store_manual_payload,
 )
-
 from spotifygpt.pipeline import (
     build_daily_mode,
     build_weekly_radar,
@@ -130,9 +128,10 @@ def build_parser() -> argparse.ArgumentParser:
     auth_parser = subparsers.add_parser(
         "auth", help="Run Spotify OAuth and persist access/refresh tokens."
     )
+    # IMPORTANT: default must be None so tests can monkeypatch env vars after import.
     auth_parser.add_argument(
         "--client-id",
-        default=os.getenv("SPOTIFY_CLIENT_ID"),
+        default=None,
         help="Spotify app client id. Defaults to SPOTIFY_CLIENT_ID env var.",
     )
     auth_parser.add_argument(
@@ -189,10 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _ensure_pipeline_alerts_table(connection: sqlite3.Connection) -> None:
-    columns = {
-        row[1]
-        for row in connection.execute("PRAGMA table_info(alerts)").fetchall()
-    }
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(alerts)").fetchall()}
     expected = {"id", "created_at", "level", "message"}
     if columns and columns != expected:
         connection.execute("DROP TABLE IF EXISTS alerts")
@@ -220,7 +216,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "auth":
-        if not args.client_id:
+        # Resolve env var at runtime (NOT at parser construction time).
+        client_id = args.client_id or os.environ.get("SPOTIFY_CLIENT_ID")
+        if not client_id:
             print(
                 "Missing client id. Set --client-id or SPOTIFY_CLIENT_ID.",
                 file=sys.stderr,
@@ -228,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         config = OAuthConfig(
-            client_id=args.client_id,
+            client_id=client_id,
             redirect_uri=args.redirect_uri,
             scope=args.scope,
         )
@@ -343,9 +341,7 @@ def main(argv: list[str] | None = None) -> int:
             if entry is None:
                 print("No daily data available.", file=sys.stderr)
                 return 1
-            print(
-                f"Daily mode for {entry.date}: {entry.stream_count} streams, {entry.total_ms} ms"
-            )
+            print(f"Daily mode for {entry.date}: {entry.stream_count} streams, {entry.total_ms} ms")
             return 0
 
         if args.command == "alerts":
