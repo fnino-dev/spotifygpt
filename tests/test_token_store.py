@@ -33,9 +33,11 @@ def test_store_and_load_token_with_secure_permissions(tmp_path: Path) -> None:
         assert mode == stat.S_IRUSR | stat.S_IWUSR
     else:
         # Windows does not reliably map ACLs to POSIX permission bits. Ensure
-        # persistence worked and the token file exists without enforcing a
-        # non-portable chmod(0o600) assertion.
+        # persistence worked and verify portable safety invariants without
+        # relying on non-portable chmod(0o600) semantics.
         assert path.exists()
+        assert path.is_file()
+        assert (mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)) == 0
 
 
 def test_get_access_token_refreshes_when_expired(tmp_path: Path, monkeypatch) -> None:
