@@ -14,3 +14,14 @@ __pycache__/
 
 # OS
 .DS_Store
+
+# Local data / exports / secrets
+/data/
+.spotifygpt/
+
+# Local databases / artifacts
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.zip
