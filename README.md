@@ -53,6 +53,8 @@ python -m spotifygpt sync ./spotifygpt.db --token "$SPOTIFY_TOKEN" --since 2026-
 # Backfill missing audio features for used tracks
 python -m spotifygpt backfill-features ./spotifygpt.db --limit 100 --since 2026-01-01T00:00:00
 
+# Generate deterministic musical DNA profile JSON
+python -m spotifygpt profile ./spotifygpt.db --output musical_dna_v1.json --mode-playlist FreshkitØ --mode-playlist Suave_Suave_
 
 ---
 
