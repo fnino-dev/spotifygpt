@@ -31,6 +31,7 @@ from spotifygpt.pipeline import (
     generate_alerts,
     init_pipeline_tables,
 )
+from spotifygpt.profile import DEFAULT_OUTPUT_PATH, generate_profile, write_profile
 from spotifygpt.sync_v2 import SpotifyAPIClient, SyncService
 from spotifygpt.token_store import TokenStore
 
@@ -184,6 +185,47 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional bearer token for audio-feature endpoint.",
     )
 
+    profile_parser = subparsers.add_parser(
+        "profile", help="Generate deterministic musical_dna_v1 profile JSON."
+    )
+    profile_parser.add_argument(
+        "db", type=Path, help="SQLite database path"
+    )
+    profile_parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_OUTPUT_PATH,
+        help="Output JSON path (default: ./musical_dna_v1.json)",
+    )
+    profile_parser.add_argument(
+        "--mode-playlist",
+        action="append",
+        default=[],
+        help="Mode playlist selector (playlist id first, then name fallback). Repeatable.",
+    )
+    profile_parser.add_argument(
+        "--mode-label",
+        action="append",
+        default=[],
+        help="Mode label override in the form selector=Label. Repeatable.",
+    )
+    profile_parser.add_argument(
+        "--mode-labels-file",
+        type=Path,
+        default=None,
+        help="Optional JSON file mapping playlist selectors to labels.",
+    )
+    profile_parser.add_argument(
+        "--my-top-tracks-playlist",
+        default="my_top_tracks_playlist",
+        help="Playlist selector for my_top_tracks signal.",
+    )
+    profile_parser.add_argument(
+        "--radar-playlist",
+        default="radar_de_novedades",
+        help="Playlist selector for radar_de_novedades signal.",
+    )
+
     return parser
 
 
@@ -291,6 +333,32 @@ def main(argv: list[str] | None = None) -> int:
             f"{result.playlists} playlists, "
             f"{result.playlist_tracks} playlist tracks."
         )
+        return 0
+
+    if args.command == "profile":
+        mode_labels: dict[str, str] = {}
+        for raw in args.mode_label:
+            key, sep, value = raw.partition("=")
+            if not sep or not key.strip() or not value.strip():
+                print("Invalid --mode-label value. Use selector=Label format.", file=sys.stderr)
+                return 1
+            mode_labels[key.strip()] = value.strip()
+
+        with sqlite3.connect(args.db) as connection:
+            init_db(connection)
+            init_manual_import_tables(connection)
+            init_audio_feature_tables(connection)
+            profile = generate_profile(
+                connection,
+                mode_selectors=args.mode_playlist,
+                mode_labels=mode_labels,
+                mode_labels_file=args.mode_labels_file,
+                include_top_tracks_playlist=args.my_top_tracks_playlist,
+                include_radar_playlist=args.radar_playlist,
+            )
+
+        write_profile(profile, output_path=args.output)
+        print(f"Wrote profile to {args.output}.")
         return 0
 
     with sqlite3.connect(args.db) as connection:

@@ -21,6 +21,10 @@ class AudioFeatures:
     valence: float
     tempo: float
     fetched_at: str
+    loudness: float = 0.0
+    acousticness: float = 0.0
+    instrumentalness: float = 0.0
+    speechiness: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -77,6 +81,10 @@ class HttpAudioFeatureProvider:
             energy = float(payload["energy"])
             valence = float(payload["valence"])
             tempo = float(payload["tempo"])
+            loudness = float(payload.get("loudness", 0.0))
+            acousticness = float(payload.get("acousticness", 0.0))
+            instrumentalness = float(payload.get("instrumentalness", 0.0))
+            speechiness = float(payload.get("speechiness", 0.0))
         except (TypeError, ValueError):
             return None
 
@@ -86,6 +94,10 @@ class HttpAudioFeatureProvider:
             energy=energy,
             valence=valence,
             tempo=tempo,
+            loudness=loudness,
+            acousticness=acousticness,
+            instrumentalness=instrumentalness,
+            speechiness=speechiness,
             fetched_at=datetime.utcnow().isoformat(timespec="seconds"),
         )
 
@@ -121,6 +133,10 @@ class RateLimitedCachedProvider:
                     energy=float(payload["energy"]),
                     valence=float(payload["valence"]),
                     tempo=float(payload["tempo"]),
+                    loudness=float(payload.get("loudness", 0.0)),
+                    acousticness=float(payload.get("acousticness", 0.0)),
+                    instrumentalness=float(payload.get("instrumentalness", 0.0)),
+                    speechiness=float(payload.get("speechiness", 0.0)),
                     fetched_at=str(payload["fetched_at"]),
                 )
             except (KeyError, ValueError, TypeError, json.JSONDecodeError):
@@ -150,6 +166,10 @@ class RateLimitedCachedProvider:
                         "energy": feature.energy,
                         "valence": feature.valence,
                         "tempo": feature.tempo,
+                        "loudness": feature.loudness,
+                        "acousticness": feature.acousticness,
+                        "instrumentalness": feature.instrumentalness,
+                        "speechiness": feature.speechiness,
                         "fetched_at": feature.fetched_at,
                     }
                 ),
@@ -168,10 +188,20 @@ def init_audio_feature_tables(connection: sqlite3.Connection) -> None:
             energy REAL NOT NULL,
             valence REAL NOT NULL,
             tempo REAL NOT NULL,
+            loudness REAL,
+            acousticness REAL,
+            instrumentalness REAL,
+            speechiness REAL,
             fetched_at TEXT NOT NULL
         )
         """
     )
+    existing_columns = {
+        row[1] for row in connection.execute("PRAGMA table_info(audio_features)").fetchall()
+    }
+    for column in ("loudness", "acousticness", "instrumentalness", "speechiness"):
+        if column not in existing_columns:
+            connection.execute(f"ALTER TABLE audio_features ADD COLUMN {column} REAL")
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS audio_feature_cache (
@@ -243,8 +273,19 @@ def backfill_audio_features(
         connection.execute(
             """
             INSERT OR REPLACE INTO audio_features
-                (track_key, danceability, energy, valence, tempo, fetched_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (
+                    track_key,
+                    danceability,
+                    energy,
+                    valence,
+                    tempo,
+                    loudness,
+                    acousticness,
+                    instrumentalness,
+                    speechiness,
+                    fetched_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 feature.track_key,
@@ -252,6 +293,10 @@ def backfill_audio_features(
                 feature.energy,
                 feature.valence,
                 feature.tempo,
+                feature.loudness,
+                feature.acousticness,
+                feature.instrumentalness,
+                feature.speechiness,
                 feature.fetched_at,
             ),
         )
