@@ -385,6 +385,36 @@ def main(argv: list[str] | None = None) -> int:
         init_pipeline_tables(connection)
         init_audio_feature_tables(connection)
 
+        if args.command == "backfill-features":
+            init_manual_import_tables(connection)
+
+            if args.since is not None and not _is_valid_iso8601(args.since):
+                print("Invalid --since value. Use ISO-8601 format.", file=sys.stderr)
+                return 1
+
+            provider = _build_audio_feature_provider(args)
+            if provider is None:
+                print(
+                    "Audio-feature endpoint not configured. Set --endpoint or "
+                    "SPOTIFYGPT_AUDIO_FEATURES_ENDPOINT.",
+                    file=sys.stderr,
+                )
+                return 1
+
+            result = backfill_audio_features(
+                connection,
+                provider=provider,
+                limit=args.limit,
+                since=args.since,
+                requests_per_second=args.requests_per_second,
+            )
+            print(
+                "Backfilled audio features "
+                f"(scanned={result.scanned}, inserted={result.inserted}, "
+                f"cache_hits={result.cache_hits}, api_calls={result.api_calls})."
+            )
+            return 0
+
         if not ensure_non_empty_streams(connection):
             print("No streams available. Run the import command first.", file=sys.stderr)
             return 1
@@ -415,34 +445,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "alerts":
             alerts = generate_alerts(connection)
             print(f"Generated {len(alerts)} alerts.")
-            return 0
-
-        if args.command == "backfill-features":
-            if args.since is not None and not _is_valid_iso8601(args.since):
-                print("Invalid --since value. Use ISO-8601 format.", file=sys.stderr)
-                return 1
-
-            provider = _build_audio_feature_provider(args)
-            if provider is None:
-                print(
-                    "Audio-feature endpoint not configured. Set --endpoint or "
-                    "SPOTIFYGPT_AUDIO_FEATURES_ENDPOINT.",
-                    file=sys.stderr,
-                )
-                return 1
-
-            result = backfill_audio_features(
-                connection,
-                provider=provider,
-                limit=args.limit,
-                since=args.since,
-                requests_per_second=args.requests_per_second,
-            )
-            print(
-                "Backfilled audio features "
-                f"(scanned={result.scanned}, inserted={result.inserted}, "
-                f"cache_hits={result.cache_hits}, api_calls={result.api_calls})."
-            )
             return 0
 
     return 1
