@@ -12,6 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from spotifygpt.manual_import import init_manual_import_tables
+
 
 @dataclass(frozen=True)
 class AudioFeatures:
@@ -215,27 +217,47 @@ def init_audio_feature_tables(connection: sqlite3.Connection) -> None:
 
 
 def _build_missing_query(since: str | None) -> tuple[str, tuple[object, ...]]:
-    if since is None:
-        return (
-            """
-            SELECT DISTINCT s.track_key, s.track_name, s.artist_name
-            FROM streams s
-            LEFT JOIN audio_features af ON af.track_key = s.track_key
-            WHERE af.track_key IS NULL
-            ORDER BY s.track_key
-            """,
-            (),
-        )
+    stream_filter = ""
+    params: tuple[object, ...] = ()
+    if since is not None:
+        stream_filter = "WHERE s.end_time >= ?"
+        params = (since,)
 
     return (
-        """
-        SELECT DISTINCT s.track_key, s.track_name, s.artist_name
-        FROM streams s
-        LEFT JOIN audio_features af ON af.track_key = s.track_key
-        WHERE af.track_key IS NULL AND s.end_time >= ?
-        ORDER BY s.track_key
+        f"""
+        WITH source_candidates AS (
+            SELECT DISTINCT t.track_key, t.track_name, t.artist_name, 1 AS priority
+            FROM playlist_tracks pt
+            JOIN tracks t ON t.id = pt.track_id
+
+            UNION ALL
+
+            SELECT DISTINCT t.track_key, t.track_name, t.artist_name, 2 AS priority
+            FROM library l
+            JOIN tracks t ON t.id = l.track_id
+
+            UNION ALL
+
+            SELECT DISTINCT s.track_key, s.track_name, s.artist_name, 3 AS priority
+            FROM streams s
+            {stream_filter}
+        ),
+        deduped_candidates AS (
+            SELECT
+                track_key,
+                MIN(priority) AS priority,
+                MIN(track_name) AS track_name,
+                MIN(artist_name) AS artist_name
+            FROM source_candidates
+            GROUP BY track_key
+        )
+        SELECT dc.track_key, dc.track_name, dc.artist_name
+        FROM deduped_candidates dc
+        LEFT JOIN audio_features af ON af.track_key = dc.track_key
+        WHERE af.track_key IS NULL
+        ORDER BY dc.priority, dc.track_key
         """,
-        (since,),
+        params,
     )
 
 
@@ -247,6 +269,7 @@ def backfill_audio_features(
     requests_per_second: float = 5.0,
 ) -> BackfillResult:
     init_audio_feature_tables(connection)
+    init_manual_import_tables(connection)
 
     query, params = _build_missing_query(since)
     if limit is not None:
