@@ -34,6 +34,7 @@ class BackfillCandidate:
     track_key: str
     track_name: str
     artist_name: str
+    spotify_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,11 @@ class BackfillResult:
 class AudioFeatureProvider(Protocol):
     def fetch(self, candidate: BackfillCandidate) -> AudioFeatures | None:
         """Fetch audio features for a candidate track."""
+
+
+class BatchAudioFeatureProvider(Protocol):
+    def fetch_many(self, candidates: list[BackfillCandidate]) -> dict[str, AudioFeatures]:
+        """Fetch audio features for multiple candidates keyed by track_key."""
 
 
 class HttpAudioFeatureProvider:
@@ -102,6 +108,88 @@ class HttpAudioFeatureProvider:
             speechiness=speechiness,
             fetched_at=datetime.utcnow().isoformat(timespec="seconds"),
         )
+
+
+class SpotifyWebApiAudioFeatureProvider:
+    """Direct Spotify Web API provider for batched /audio-features requests."""
+
+    endpoint = "https://api.spotify.com/v1/audio-features"
+
+    def __init__(self, auth_token: str):
+        self.auth_token = auth_token
+
+    def _build_payload_features(
+        self, candidate: BackfillCandidate, payload: dict[str, object]
+    ) -> AudioFeatures | None:
+        required = ("danceability", "energy", "valence", "tempo")
+        if any(key not in payload for key in required):
+            return None
+        try:
+            return AudioFeatures(
+                track_key=candidate.track_key,
+                danceability=float(payload["danceability"]),
+                energy=float(payload["energy"]),
+                valence=float(payload["valence"]),
+                tempo=float(payload["tempo"]),
+                loudness=float(payload.get("loudness", 0.0)),
+                acousticness=float(payload.get("acousticness", 0.0)),
+                instrumentalness=float(payload.get("instrumentalness", 0.0)),
+                speechiness=float(payload.get("speechiness", 0.0)),
+                fetched_at=datetime.utcnow().isoformat(timespec="seconds"),
+            )
+        except (TypeError, ValueError):
+            return None
+
+    def fetch_many(self, candidates: list[BackfillCandidate]) -> dict[str, AudioFeatures]:
+        id_to_candidate: dict[str, BackfillCandidate] = {
+            c.spotify_id: c for c in candidates if c.spotify_id
+        }
+        if not id_to_candidate:
+            return {}
+
+        request = Request(
+            f"{self.endpoint}?{urlencode({'ids': ','.join(id_to_candidate.keys())})}"
+        )
+        request.add_header("Authorization", f"Bearer {self.auth_token}")
+        try:
+            with urlopen(request, timeout=20) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError):
+            return {}
+
+        features_payload = payload.get("audio_features")
+        if not isinstance(features_payload, list):
+            return {}
+
+        features: dict[str, AudioFeatures] = {}
+        for row in features_payload:
+            if row is None or not isinstance(row, dict):
+                continue
+            spotify_id = row.get("id")
+            if not isinstance(spotify_id, str):
+                continue
+            candidate = id_to_candidate.get(spotify_id)
+            if candidate is None:
+                continue
+            feature = self._build_payload_features(candidate, row)
+            if feature is not None:
+                features[candidate.track_key] = feature
+        return features
+
+    def fetch(self, candidate: BackfillCandidate) -> AudioFeatures | None:
+        return self.fetch_many([candidate]).get(candidate.track_key)
+
+
+def _spotify_id_from_uri(raw_uri: str | None) -> str | None:
+    if raw_uri is None:
+        return None
+    uri = raw_uri.strip()
+    if not uri:
+        return None
+    if uri.startswith("spotify:track:"):
+        value = uri.split(":")[-1]
+        return value or None
+    return uri
 
 
 class RateLimitedCachedProvider:
@@ -226,19 +314,19 @@ def _build_missing_query(since: str | None) -> tuple[str, tuple[object, ...]]:
     return (
         f"""
         WITH source_candidates AS (
-            SELECT DISTINCT t.track_key, t.track_name, t.artist_name, 1 AS priority
+            SELECT DISTINCT t.track_key, t.track_name, t.artist_name, t.spotify_uri, 1 AS priority
             FROM playlist_tracks pt
             JOIN tracks t ON t.id = pt.track_id
 
             UNION ALL
 
-            SELECT DISTINCT t.track_key, t.track_name, t.artist_name, 2 AS priority
+            SELECT DISTINCT t.track_key, t.track_name, t.artist_name, t.spotify_uri, 2 AS priority
             FROM library l
             JOIN tracks t ON t.id = l.track_id
 
             UNION ALL
 
-            SELECT DISTINCT s.track_key, s.track_name, s.artist_name, 3 AS priority
+            SELECT DISTINCT s.track_key, s.track_name, s.artist_name, NULL AS spotify_uri, 3 AS priority
             FROM streams s
             {stream_filter}
         ),
@@ -247,17 +335,51 @@ def _build_missing_query(since: str | None) -> tuple[str, tuple[object, ...]]:
                 track_key,
                 MIN(priority) AS priority,
                 MIN(track_name) AS track_name,
-                MIN(artist_name) AS artist_name
+                MIN(artist_name) AS artist_name,
+                MIN(spotify_uri) AS spotify_uri
             FROM source_candidates
             GROUP BY track_key
         )
-        SELECT dc.track_key, dc.track_name, dc.artist_name
+        SELECT dc.track_key, dc.track_name, dc.artist_name, dc.spotify_uri
         FROM deduped_candidates dc
         LEFT JOIN audio_features af ON af.track_key = dc.track_key
         WHERE af.track_key IS NULL
         ORDER BY dc.priority, dc.track_key
         """,
         params,
+    )
+
+
+def _insert_audio_feature(connection: sqlite3.Connection, feature: AudioFeatures) -> None:
+    connection.execute(
+        """
+        INSERT OR REPLACE INTO audio_features
+            (
+                track_key,
+                danceability,
+                energy,
+                valence,
+                tempo,
+                loudness,
+                acousticness,
+                instrumentalness,
+                speechiness,
+                fetched_at
+            )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            feature.track_key,
+            feature.danceability,
+            feature.energy,
+            feature.valence,
+            feature.tempo,
+            feature.loudness,
+            feature.acousticness,
+            feature.instrumentalness,
+            feature.speechiness,
+            feature.fetched_at,
+        ),
     )
 
 
@@ -278,9 +400,96 @@ def backfill_audio_features(
 
     rows = connection.execute(query, params).fetchall()
     candidates = [
-        BackfillCandidate(track_key=row[0], track_name=row[1], artist_name=row[2])
+        BackfillCandidate(
+            track_key=row[0],
+            track_name=row[1],
+            artist_name=row[2],
+            spotify_id=_spotify_id_from_uri(row[3]),
+        )
         for row in rows
     ]
+
+    if isinstance(provider, SpotifyWebApiAudioFeatureProvider):
+        min_interval = 0.0 if requests_per_second <= 0 else 1.0 / requests_per_second
+        api_calls = 0
+        cache_hits = 0
+        inserted = 0
+        pending: list[BackfillCandidate] = []
+        last_call_at = 0.0
+
+        for candidate in candidates:
+            cached = connection.execute(
+                "SELECT payload FROM audio_feature_cache WHERE track_key = ?",
+                (candidate.track_key,),
+            ).fetchone()
+            if cached:
+                try:
+                    payload = json.loads(cached[0])
+                    feature = AudioFeatures(
+                        track_key=candidate.track_key,
+                        danceability=float(payload["danceability"]),
+                        energy=float(payload["energy"]),
+                        valence=float(payload["valence"]),
+                        tempo=float(payload["tempo"]),
+                        loudness=float(payload.get("loudness", 0.0)),
+                        acousticness=float(payload.get("acousticness", 0.0)),
+                        instrumentalness=float(payload.get("instrumentalness", 0.0)),
+                        speechiness=float(payload.get("speechiness", 0.0)),
+                        fetched_at=str(payload["fetched_at"]),
+                    )
+                    _insert_audio_feature(connection, feature)
+                    cache_hits += 1
+                    inserted += 1
+                    continue
+                except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+                    pass
+            pending.append(candidate)
+
+        for index in range(0, len(pending), 100):
+            batch = pending[index : index + 100]
+            now = time.monotonic()
+            wait_seconds = min_interval - (now - last_call_at)
+            if wait_seconds > 0:
+                time.sleep(wait_seconds)
+
+            features = provider.fetch_many(batch)
+            api_calls += 1
+            last_call_at = time.monotonic()
+
+            for feature in features.values():
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO audio_feature_cache (track_key, payload, fetched_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        feature.track_key,
+                        json.dumps(
+                            {
+                                "danceability": feature.danceability,
+                                "energy": feature.energy,
+                                "valence": feature.valence,
+                                "tempo": feature.tempo,
+                                "loudness": feature.loudness,
+                                "acousticness": feature.acousticness,
+                                "instrumentalness": feature.instrumentalness,
+                                "speechiness": feature.speechiness,
+                                "fetched_at": feature.fetched_at,
+                            }
+                        ),
+                        feature.fetched_at,
+                    ),
+                )
+                _insert_audio_feature(connection, feature)
+                inserted += 1
+
+        connection.commit()
+        return BackfillResult(
+            scanned=len(candidates),
+            inserted=inserted,
+            cache_hits=cache_hits,
+            api_calls=api_calls,
+        )
 
     wrapper = RateLimitedCachedProvider(
         connection=connection,
@@ -293,36 +502,7 @@ def backfill_audio_features(
         feature = wrapper.fetch(candidate)
         if feature is None:
             continue
-        connection.execute(
-            """
-            INSERT OR REPLACE INTO audio_features
-                (
-                    track_key,
-                    danceability,
-                    energy,
-                    valence,
-                    tempo,
-                    loudness,
-                    acousticness,
-                    instrumentalness,
-                    speechiness,
-                    fetched_at
-                )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                feature.track_key,
-                feature.danceability,
-                feature.energy,
-                feature.valence,
-                feature.tempo,
-                feature.loudness,
-                feature.acousticness,
-                feature.instrumentalness,
-                feature.speechiness,
-                feature.fetched_at,
-            ),
-        )
+        _insert_audio_feature(connection, feature)
         inserted += 1
 
     connection.commit()

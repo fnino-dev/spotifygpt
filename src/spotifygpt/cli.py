@@ -12,6 +12,7 @@ from pathlib import Path
 from spotifygpt.auth import OAuthConfig, authenticate_browser_flow
 from spotifygpt.audio_features import (
     HttpAudioFeatureProvider,
+    SpotifyWebApiAudioFeatureProvider,
     backfill_audio_features,
     init_audio_feature_tables,
 )
@@ -245,12 +246,16 @@ def _is_valid_iso8601(value: str) -> bool:
     return True
 
 
-def _build_audio_feature_provider(args: argparse.Namespace) -> HttpAudioFeatureProvider | None:
+def _build_audio_feature_provider(
+    args: argparse.Namespace,
+) -> HttpAudioFeatureProvider | SpotifyWebApiAudioFeatureProvider | None:
     endpoint = args.endpoint or os.environ.get("SPOTIFYGPT_AUDIO_FEATURES_ENDPOINT")
-    if endpoint is None:
-        return None
     auth_token = args.auth_token or os.environ.get("SPOTIFYGPT_AUDIO_FEATURES_TOKEN")
-    return HttpAudioFeatureProvider(endpoint=endpoint, auth_token=auth_token)
+    if endpoint is not None:
+        return HttpAudioFeatureProvider(endpoint=endpoint, auth_token=auth_token)
+    if auth_token is None:
+        return None
+    return SpotifyWebApiAudioFeatureProvider(auth_token=auth_token)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -395,8 +400,8 @@ def main(argv: list[str] | None = None) -> int:
             provider = _build_audio_feature_provider(args)
             if provider is None:
                 print(
-                    "Audio-feature endpoint not configured. Set --endpoint or "
-                    "SPOTIFYGPT_AUDIO_FEATURES_ENDPOINT.",
+                    "Missing audio-features provider configuration. Provide --auth-token "
+                    "for built-in Spotify Web API backfill or set --endpoint for a custom provider.",
                     file=sys.stderr,
                 )
                 return 1

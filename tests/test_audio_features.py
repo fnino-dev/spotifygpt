@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from spotifygpt.audio_features import (
     AudioFeatures,
     BackfillCandidate,
+    SpotifyWebApiAudioFeatureProvider,
     backfill_audio_features,
     init_audio_feature_tables,
 )
@@ -195,3 +197,104 @@ def test_backfill_audio_features_dedupes_manual_sources() -> None:
     assert result.scanned == 1
     assert result.inserted == 1
     assert provider.calls == 1
+
+
+class _FakeSpotifyResponse:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+    def __enter__(self) -> "_FakeSpotifyResponse":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+def test_spotify_provider_batches_100_and_skips_null_rows(monkeypatch) -> None:
+    connection = sqlite3.connect(":memory:")
+    init_db(connection)
+    init_manual_import_tables(connection)
+    init_audio_feature_tables(connection)
+
+    connection.execute("INSERT INTO playlists (name) VALUES (?)", ("P",))
+    playlist_id = int(connection.execute("SELECT id FROM playlists").fetchone()[0])
+    for i in range(101):
+        spotify_id = f"id-{i}"
+        track_key = f"key-{i}"
+        track_id = _insert_track(connection, track_key, f"Track {i}", "Artist")
+        connection.execute("UPDATE tracks SET spotify_uri = ? WHERE id = ?", (f"spotify:track:{spotify_id}", track_id))
+        connection.execute(
+            "INSERT INTO playlist_tracks (playlist_id, track_id, position, added_at) VALUES (?, ?, ?, ?)",
+            (playlist_id, track_id, i + 1, "2026-01-01T00:00:00Z"),
+        )
+    connection.commit()
+
+    calls: list[object] = []
+
+    def fake_urlopen(request, timeout=20):
+        from urllib.parse import parse_qs, urlparse
+
+        parsed = urlparse(request.full_url)
+        ids = parse_qs(parsed.query).get("ids", [""])[0].split(",")
+        calls.append(request)
+        payload_rows: list[object] = []
+        for item in ids:
+            if item == "id-5":
+                payload_rows.append(None)
+            else:
+                payload_rows.append(
+                    {
+                        "id": item,
+                        "danceability": 0.5,
+                        "energy": 0.5,
+                        "valence": 0.5,
+                        "tempo": 120.0,
+                    }
+                )
+        return _FakeSpotifyResponse({"audio_features": payload_rows})
+
+    monkeypatch.setattr("spotifygpt.audio_features.urlopen", fake_urlopen)
+
+    provider = SpotifyWebApiAudioFeatureProvider(auth_token="token")
+    result = backfill_audio_features(connection, provider=provider)
+
+    assert result.scanned == 101
+    assert result.inserted == 100
+    assert result.api_calls == 2
+    assert len(calls) == 2
+    assert calls[0].get_header("Authorization") == "Bearer token"
+
+
+def test_backfill_skips_existing_audio_features(monkeypatch) -> None:
+    connection = sqlite3.connect(":memory:")
+    init_db(connection)
+    init_manual_import_tables(connection)
+    init_audio_feature_tables(connection)
+    _seed_playlist_tracks(connection, [("pl-key-1", "Track P1", "Artist P")])
+
+    connection.execute(
+        """
+        INSERT INTO audio_features (track_key, danceability, energy, valence, tempo, fetched_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("pl-key-1", 0.1, 0.1, 0.1, 100.0, "2026-01-01T00:00:00"),
+    )
+    connection.commit()
+
+    called = {"value": False}
+
+    def fake_urlopen(request, timeout=20):
+        called["value"] = True
+        return _FakeSpotifyResponse({"audio_features": []})
+
+    monkeypatch.setattr("spotifygpt.audio_features.urlopen", fake_urlopen)
+    provider = SpotifyWebApiAudioFeatureProvider(auth_token="token")
+    result = backfill_audio_features(connection, provider=provider)
+
+    assert result.scanned == 0
+    assert result.inserted == 0
+    assert result.api_calls == 0
+    assert called["value"] is False
