@@ -161,9 +161,15 @@ def test_render_profile_report_contains_required_sections() -> None:
     rendered = render_profile_report(profile)
 
     assert "## Metadata" in rendered
+    assert "## Executive Summary" in rendered
+    assert "Transition recommendation" in rendered
+    assert "## Mode mapping overview" in rendered
+    assert "`playlist` → `Activation`" in rendered
     assert "## Global summary" in rendered
     assert "## Mode summaries" in rendered
     assert "## Comparisons" in rendered
+    assert "Metric meaning: `cosine`" in rendered
+    assert "Metric meaning: `euclidean_z`" in rendered
     assert "cosine=" in rendered
     assert "euclidean_z=" in rendered
     assert "## Top differences" in rendered

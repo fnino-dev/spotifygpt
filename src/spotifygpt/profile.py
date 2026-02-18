@@ -318,6 +318,59 @@ def _format_stat_row(label: str, stats: dict[str, dict[str, float]]) -> str:
     return "| " + " | ".join(values) + " |"
 
 
+def _mode_mapping_lines(profile: dict[str, Any]) -> list[str]:
+    lines = ["## Mode mapping overview"]
+    mode_profiles = profile.get("mode_profiles", [])
+    if not mode_profiles:
+        lines.append("- No mode mappings available.")
+        return lines
+    for mode_profile in mode_profiles:
+        lines.append(f"- `{mode_profile['source']}` → `{mode_profile['label']}`")
+    return lines
+
+
+def _executive_summary_lines(profile: dict[str, Any]) -> list[str]:
+    lines = ["## Executive Summary"]
+    mode_profiles = profile.get("mode_profiles", [])
+    lines.append(
+        "- Your global musical DNA blends "
+        f"energy `{profile['global_profile']['feature_stats']['energy']['mean']:.4f}`, "
+        f"valence `{profile['global_profile']['feature_stats']['valence']['mean']:.4f}`, and "
+        f"danceability `{profile['global_profile']['feature_stats']['danceability']['mean']:.4f}` baselines."
+    )
+    lines.append(
+        "- The profile is built from "
+        f"`{profile['inputs']['liked_songs']}` liked songs and `{len(mode_profiles)}` resolved mode playlists."
+    )
+
+    comparison = _find_activation_regulation_comparison(profile)
+    if comparison is None:
+        lines.append("- Activation vs Regulation: not enough mode data to compare both states yet.")
+        lines.append("- Transition recommendation: add at least two modes to unlock a tempo/energy bridge suggestion.")
+        return lines
+
+    delta_map = {item["feature"]: item["delta_mean"] for item in comparison["top_differences"]}
+    energy_delta = delta_map.get("energy", 0.0)
+    tempo_delta = delta_map.get("tempo", 0.0)
+    activation_side = comparison["left"]
+    regulation_side = comparison["right"]
+    if "activation" in regulation_side.lower() and "regulation" in activation_side.lower():
+        activation_side, regulation_side = regulation_side, activation_side
+        energy_delta *= -1
+        tempo_delta *= -1
+
+    lines.append(
+        "- Activation vs Regulation: "
+        f"`{activation_side}` skews toward higher arousal while `{regulation_side}` trends more down-regulating "
+        f"(energy Δ `{energy_delta:+.4f}`, tempo Δ `{tempo_delta:+.4f}`)."
+    )
+    lines.append(
+        "- Transition recommendation: begin with the lower-energy/lower-tempo profile for grounding, "
+        "then step up to the higher-energy/higher-tempo profile when you need activation."
+    )
+    return lines
+
+
 def render_profile_report(profile: dict[str, Any]) -> str:
     lines: list[str] = []
     inputs = profile["inputs"]
@@ -332,6 +385,10 @@ def render_profile_report(profile: dict[str, Any]) -> str:
             f"- app_version: `{profile['app_version']}`",
             f"- generated_at: `{profile['generated_at']}`",
             f"- inputs: liked_songs={inputs['liked_songs']}, mode_playlists_requested={inputs['mode_playlists_requested']}, mode_playlists_resolved={inputs['mode_playlists_resolved']}, my_top_tracks_playlist={inputs['my_top_tracks_playlist']}, radar_de_novedades={inputs['radar_de_novedades']}",
+            "",
+            *_executive_summary_lines(profile),
+            "",
+            *_mode_mapping_lines(profile),
             "",
             "## Global summary",
         ]
@@ -351,6 +408,8 @@ def render_profile_report(profile: dict[str, Any]) -> str:
     lines.append("")
 
     lines.append("## Comparisons")
+    lines.append("- Metric meaning: `cosine` measures directional similarity of feature vectors (lower = more similar).")
+    lines.append("- Metric meaning: `euclidean_z` measures absolute distance after z-normalization (lower = closer profiles).")
     if not profile["comparisons"]:
         lines.append("- No mode comparisons available.")
     else:
