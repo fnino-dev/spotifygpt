@@ -14,6 +14,7 @@ from spotifygpt import __version__
 
 PROFILE_VERSION = "musical_dna_v1"
 DEFAULT_OUTPUT_PATH = Path("musical_dna_v1.json")
+DEFAULT_REPORT_OUTPUT_PATH = Path("musical_dna_v1_report.md")
 FEATURES = (
     "energy",
     "valence",
@@ -291,3 +292,105 @@ def generate_profile(
 
 def write_profile(profile: dict[str, Any], output_path: Path = DEFAULT_OUTPUT_PATH) -> None:
     output_path.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _find_activation_regulation_comparison(profile: dict[str, Any]) -> dict[str, Any] | None:
+    comparisons = profile.get("comparisons", [])
+    for comparison in comparisons:
+        left = str(comparison.get("left", "")).lower()
+        right = str(comparison.get("right", "")).lower()
+        if "activation" in left and "regulation" in right:
+            return comparison
+        if "activation" in right and "regulation" in left:
+            return comparison
+    return comparisons[0] if comparisons else None
+
+
+def _format_stat_row(label: str, stats: dict[str, dict[str, float]]) -> str:
+    values = [
+        label,
+        *(
+            f"{stats[feature]['mean']:.4f} / {stats[feature]['p25']:.4f} / "
+            f"{stats[feature]['p50']:.4f} / {stats[feature]['p75']:.4f}"
+            for feature in FEATURES
+        ),
+    ]
+    return "| " + " | ".join(values) + " |"
+
+
+def render_profile_report(profile: dict[str, Any]) -> str:
+    lines: list[str] = []
+    inputs = profile["inputs"]
+    global_stats = profile["global_profile"]["feature_stats"]
+
+    lines.extend(
+        [
+            "# Musical DNA v1 Report",
+            "",
+            "## Metadata",
+            f"- version: `{profile['version']}`",
+            f"- app_version: `{profile['app_version']}`",
+            f"- generated_at: `{profile['generated_at']}`",
+            f"- inputs: liked_songs={inputs['liked_songs']}, mode_playlists_requested={inputs['mode_playlists_requested']}, mode_playlists_resolved={inputs['mode_playlists_resolved']}, my_top_tracks_playlist={inputs['my_top_tracks_playlist']}, radar_de_novedades={inputs['radar_de_novedades']}",
+            "",
+            "## Global summary",
+        ]
+    )
+
+    headers = ["scope", *FEATURES]
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+    lines.append(_format_stat_row("global", global_stats))
+    lines.append("")
+
+    lines.append("## Mode summaries")
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(headers)) + " |")
+    for mode_profile in profile["mode_profiles"]:
+        lines.append(_format_stat_row(mode_profile["label"], mode_profile["feature_stats"]))
+    lines.append("")
+
+    lines.append("## Comparisons")
+    if not profile["comparisons"]:
+        lines.append("- No mode comparisons available.")
+    else:
+        for comparison in profile["comparisons"]:
+            lines.append(
+                f"- {comparison['left']} vs {comparison['right']}: cosine={comparison['cosine']:.6f}, euclidean_z={comparison['euclidean_z']:.6f}"
+            )
+    lines.append("")
+
+    lines.append("## Top differences")
+    if not profile["comparisons"]:
+        lines.append("- No differences available.")
+    else:
+        for comparison in profile["comparisons"]:
+            lines.append(f"### {comparison['left']} vs {comparison['right']}")
+            for delta in comparison["top_differences"]:
+                lines.append(f"- {delta['feature']}: delta_mean={delta['delta_mean']:.6f}")
+    lines.append("")
+
+    lines.append("## Actionable")
+    comparison = _find_activation_regulation_comparison(profile)
+    if comparison is None:
+        lines.append("- Activation vs Regulation interpretation unavailable (need at least two mode profiles).")
+    else:
+        delta_map = {item["feature"]: item["delta_mean"] for item in comparison["top_differences"]}
+        energy_delta = delta_map.get("energy", 0.0)
+        tempo_delta = delta_map.get("tempo", 0.0)
+        energy_direction = "higher" if energy_delta >= 0 else "lower"
+        tempo_direction = "faster" if tempo_delta >= 0 else "slower"
+        lines.append(
+            "- Activation vs Regulation interpretation: "
+            f"`{comparison['left']}` is {energy_direction} energy ({energy_delta:+.4f}) and {tempo_direction} tempo ({tempo_delta:+.4f}) versus `{comparison['right']}`."
+        )
+        lines.append(
+            "- Tempo + energy transition hint: "
+            "start in the lower-energy/lower-tempo mode for focus, then ramp toward the higher-energy/higher-tempo mode for activation blocks."
+        )
+
+    return "\n".join(lines) + "\n"
+
+
+def write_profile_report(profile: dict[str, Any], output_path: Path = DEFAULT_REPORT_OUTPUT_PATH) -> None:
+    output_path.write_text(render_profile_report(profile), encoding="utf-8")
