@@ -8,7 +8,7 @@ from spotifygpt.audio_features import init_audio_feature_tables
 from spotifygpt.cli import main
 from spotifygpt.importer import init_db
 from spotifygpt.manual_import import init_manual_import_tables
-from spotifygpt.profile import FEATURES, generate_profile
+from spotifygpt.profile import FEATURES, generate_profile, render_profile_report
 
 
 def _seed_profile_data(connection: sqlite3.Connection) -> None:
@@ -147,3 +147,58 @@ def test_cli_profile_writes_json_and_schema_keys(tmp_path: Path) -> None:
     }
     assert payload["version"] == "musical_dna_v1"
     assert payload["mode_profiles"][0]["label"] in {"ActivationX", "RegulationX"}
+
+
+def test_render_profile_report_contains_required_sections() -> None:
+    connection = sqlite3.connect(":memory:")
+    _seed_profile_data(connection)
+
+    profile = generate_profile(
+        connection,
+        mode_selectors=["10", "suave_suave_"],
+        mode_labels={"10": "Activation", "suave_suave_": "Regulation"},
+    )
+    rendered = render_profile_report(profile)
+
+    assert "## Metadata" in rendered
+    assert "## Global summary" in rendered
+    assert "## Mode summaries" in rendered
+    assert "## Comparisons" in rendered
+    assert "cosine=" in rendered
+    assert "euclidean_z=" in rendered
+    assert "## Top differences" in rendered
+    assert "delta_mean=" in rendered
+    assert "## Actionable" in rendered
+    assert "Activation vs Regulation interpretation" in rendered
+    assert "Tempo + energy transition hint" in rendered
+
+
+def test_cli_profile_report_writes_deterministic_markdown(tmp_path: Path) -> None:
+    db_path = tmp_path / "profile.db"
+    out_path = tmp_path / "musical_dna_v1_report.md"
+    with sqlite3.connect(db_path) as connection:
+        _seed_profile_data(connection)
+
+    code = main(
+        [
+            "profile-report",
+            str(db_path),
+            "--output",
+            str(out_path),
+            "--mode-playlist",
+            "10",
+            "--mode-playlist",
+            "Suave_Suave_",
+            "--mode-label",
+            "FreshkitØ=Activation",
+            "--mode-label",
+            "Suave_Suave_=Regulation",
+        ]
+    )
+    assert code == 0
+
+    content = out_path.read_text(encoding="utf-8")
+    assert content.startswith("# Musical DNA v1 Report\n")
+    assert "generated_at: `2026-01-10T00:00:00+00:00`" in content
+    assert "## Global summary" in content
+    assert "## Mode summaries" in content

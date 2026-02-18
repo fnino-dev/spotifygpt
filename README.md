@@ -64,6 +64,9 @@ python -m spotifygpt profile ./spotifygpt.db --output musical_dna_v1.json
 # Generate deterministic musical DNA profile JSON
 python -m spotifygpt profile ./spotifygpt.db --output musical_dna_v1.json --mode-playlist FreshkitØ --mode-playlist Suave_Suave_
 
+# Generate deterministic musical DNA Markdown report
+python -m spotifygpt profile-report ./spotifygpt.db --output musical_dna_v1_report.md --mode-playlist FreshkitØ --mode-playlist Suave_Suave_
+
 ---
 
 ## Development
