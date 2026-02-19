@@ -17,6 +17,7 @@ from spotifygpt.audio_features import (
     init_audio_feature_tables,
 )
 from spotifygpt.behavior_orchestrator import orchestrate_candidates
+from spotifygpt.diurnal import get_time_block
 from spotifygpt.importer import import_gdpr, init_db, load_streaming_history, store_streams
 from spotifygpt.ingest_status import collect_ingest_status, render_ingest_status
 from spotifygpt.manual_import import (
@@ -292,6 +293,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated anchor track ids (optional).",
     )
 
+    simulate_session_novelty_parser = subparsers.add_parser(
+        "simulate-session-novelty",
+        help="Simulate session state and novelty sequencing in one deterministic run.",
+    )
+    simulate_session_novelty_parser.add_argument(
+        "--events",
+        required=True,
+        help="Comma-separated event sequence: complete|skip|early-skip (aliases: c|s|e).",
+    )
+    simulate_session_novelty_parser.add_argument(
+        "--time-block",
+        default=None,
+        help="Optional time block override (defaults to current diurnal block).",
+    )
+    simulate_session_novelty_parser.add_argument(
+        "--candidates",
+        required=True,
+        help="Comma-separated candidate track ids.",
+    )
+    simulate_session_novelty_parser.add_argument(
+        "--anchors",
+        default="",
+        help="Comma-separated anchor track ids (optional).",
+    )
+
     return parser
 
 
@@ -325,6 +351,33 @@ def _build_audio_feature_provider(
 
 def _parse_csv_items(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _normalize_session_event(raw: str) -> str | None:
+    aliases = {
+        "c": "complete",
+        "complete": "complete",
+        "s": "skip",
+        "skip": "skip",
+        "e": "early-skip",
+        "early-skip": "early-skip",
+    }
+    return aliases.get(raw.strip().lower())
+
+
+def _apply_simulation_events(events: list[str]) -> tuple[SessionStateMachine, str | None]:
+    machine = SessionStateMachine()
+    for raw in events:
+        normalized = _normalize_session_event(raw)
+        if normalized is None:
+            return machine, raw
+        machine.apply(
+            SessionEvent(
+                skipped=normalized in {"skip", "early-skip"},
+                early_skip=normalized == "early-skip",
+            )
+        )
+    return machine, None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -459,29 +512,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "simulate-session":
-        aliases = {
-            "c": "complete",
-            "complete": "complete",
-            "s": "skip",
-            "skip": "skip",
-            "e": "early-skip",
-            "early-skip": "early-skip",
-        }
         machine = SessionStateMachine()
         for index, raw in enumerate(args.events, start=1):
-            key = raw.strip().lower()
-            normalized = aliases.get(key)
+            normalized = _normalize_session_event(raw)
             if normalized is None:
                 print(
                     f"Invalid event '{raw}'. Use complete|skip|early-skip (or c|s|e).",
                     file=sys.stderr,
                 )
                 return 1
-            event = SessionEvent(
-                skipped=normalized in {"skip", "early-skip"},
-                early_skip=normalized == "early-skip",
+            snapshot = machine.apply(
+                SessionEvent(
+                    skipped=normalized in {"skip", "early-skip"},
+                    early_skip=normalized == "early-skip",
+                )
             )
-            snapshot = machine.apply(event)
             interventions = snapshot.interventions
             print(
                 f"#{index} {normalized}: "
@@ -493,6 +538,45 @@ def main(argv: list[str] | None = None) -> int:
                 f"inject_anchor={str(interventions.should_inject_anchor).lower()} "
                 f"suggest_reset={str(interventions.should_suggest_reset).lower()}"
             )
+        return 0
+
+    if args.command == "simulate-session-novelty":
+        events = _parse_csv_items(args.events)
+        if not events:
+            print("Invalid --events value. Provide at least one event.", file=sys.stderr)
+            return 1
+
+        machine, invalid_event = _apply_simulation_events(events)
+        if invalid_event is not None:
+            print(
+                f"Invalid event '{invalid_event}'. Use complete|skip|early-skip (or c|s|e).",
+                file=sys.stderr,
+            )
+            return 1
+
+        candidates = _parse_csv_items(args.candidates)
+        anchors = _parse_csv_items(args.anchors)
+        if not candidates:
+            print("Invalid --candidates value. Provide at least one track id.", file=sys.stderr)
+            return 1
+
+        time_block = args.time_block or get_time_block(datetime.now())
+        final_state = machine.snapshot().state.value
+        result = orchestrate_candidates(
+            time_block=time_block,
+            session_state=final_state,
+            candidates=candidates,
+            anchors=set(anchors),
+        )
+        print(f"final_state={final_state}")
+        print(f"time_block={time_block}")
+        print(
+            "budget: "
+            f"exploration={result.budget.exploration:.2f}, "
+            f"anchor_ratio={result.budget.anchor_ratio:.2f}, "
+            f"anchor_every_n={result.budget.anchor_every_n}"
+        )
+        print(f"sequenced={','.join(result.sequenced)}")
         return 0
 
     if args.command == "simulate-novelty":
