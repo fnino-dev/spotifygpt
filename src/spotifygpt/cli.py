@@ -16,6 +16,7 @@ from spotifygpt.audio_features import (
     backfill_audio_features,
     init_audio_feature_tables,
 )
+from spotifygpt.behavior_orchestrator import orchestrate_candidates
 from spotifygpt.importer import import_gdpr, init_db, load_streaming_history, store_streams
 from spotifygpt.ingest_status import collect_ingest_status, render_ingest_status
 from spotifygpt.manual_import import (
@@ -266,6 +267,31 @@ def build_parser() -> argparse.ArgumentParser:
         help="Event sequence tokens: complete|skip|early-skip (aliases: c|s|e).",
     )
 
+    simulate_novelty_parser = subparsers.add_parser(
+        "simulate-novelty",
+        help="Simulate novelty orchestration from candidates and optional anchors.",
+    )
+    simulate_novelty_parser.add_argument(
+        "--time-block",
+        required=True,
+        help="Time block label (e.g., MORNING/AFTERNOON/EVENING/NIGHT/LATE_NIGHT).",
+    )
+    simulate_novelty_parser.add_argument(
+        "--state",
+        required=True,
+        help="Session state (CALIENTE/NEUTRO/FRAGIL/CRITICO).",
+    )
+    simulate_novelty_parser.add_argument(
+        "--candidates",
+        required=True,
+        help="Comma-separated candidate track ids.",
+    )
+    simulate_novelty_parser.add_argument(
+        "--anchors",
+        default="",
+        help="Comma-separated anchor track ids (optional).",
+    )
+
     return parser
 
 
@@ -295,6 +321,10 @@ def _build_audio_feature_provider(
     if auth_token is None:
         return None
     return SpotifyWebApiAudioFeatureProvider(auth_token=auth_token)
+
+
+def _parse_csv_items(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -463,6 +493,37 @@ def main(argv: list[str] | None = None) -> int:
                 f"inject_anchor={str(interventions.should_inject_anchor).lower()} "
                 f"suggest_reset={str(interventions.should_suggest_reset).lower()}"
             )
+        return 0
+
+    if args.command == "simulate-novelty":
+        candidates = _parse_csv_items(args.candidates)
+        anchors = _parse_csv_items(args.anchors)
+
+        if not candidates:
+            print("Invalid --candidates value. Provide at least one track id.", file=sys.stderr)
+            return 1
+
+        try:
+            result = orchestrate_candidates(
+                time_block=args.time_block,
+                session_state=args.state,
+                candidates=candidates,
+                anchors=set(anchors),
+            )
+        except ValueError:
+            print(
+                "Invalid --state value. Use CALIENTE/NEUTRO/FRAGIL/CRITICO.",
+                file=sys.stderr,
+            )
+            return 1
+
+        print(
+            "budget: "
+            f"exploration={result.budget.exploration:.2f}, "
+            f"anchor_ratio={result.budget.anchor_ratio:.2f}, "
+            f"anchor_every_n={result.budget.anchor_every_n}"
+        )
+        print(",".join(result.sequenced))
         return 0
 
     with sqlite3.connect(args.db) as connection:
