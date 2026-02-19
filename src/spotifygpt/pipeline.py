@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import sqlite3
 from typing import Iterable
 
@@ -341,7 +341,7 @@ def generate_alerts(connection: sqlite3.Connection) -> list[Alert]:
     share = top_ms / total_ms
     alerts: list[Alert] = []
     if share >= 0.5:
-        created_at = datetime.utcnow().isoformat(timespec="seconds")
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         message = (
             "Dominant track detected: "
             f"{top_row['track_name']} by {top_row['artist_name']} "
