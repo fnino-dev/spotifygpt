@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import sqlite3
 import time
@@ -106,7 +106,7 @@ class HttpAudioFeatureProvider:
             acousticness=acousticness,
             instrumentalness=instrumentalness,
             speechiness=speechiness,
-            fetched_at=datetime.utcnow().isoformat(timespec="seconds"),
+            fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
 
 
@@ -135,7 +135,7 @@ class SpotifyWebApiAudioFeatureProvider:
                 acousticness=float(payload.get("acousticness", 0.0)),
                 instrumentalness=float(payload.get("instrumentalness", 0.0)),
                 speechiness=float(payload.get("speechiness", 0.0)),
-                fetched_at=datetime.utcnow().isoformat(timespec="seconds"),
+                fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             )
         except (TypeError, ValueError):
             return None
