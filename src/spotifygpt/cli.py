@@ -39,6 +39,7 @@ from spotifygpt.profile import (
     write_profile,
     write_profile_report,
 )
+from spotifygpt.session_state import SessionEvent, SessionStateMachine
 from spotifygpt.sync_v2 import SpotifyAPIClient, SyncService
 from spotifygpt.token_store import TokenStore
 
@@ -256,6 +257,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Mode label override in the form selector=Label. Repeatable.",
     )
 
+    simulate_session_parser = subparsers.add_parser(
+        "simulate-session", help="Simulate session-state transitions for skip behavior."
+    )
+    simulate_session_parser.add_argument(
+        "events",
+        nargs="+",
+        help="Event sequence tokens: complete|skip|early-skip (aliases: c|s|e).",
+    )
+
     return parser
 
 
@@ -416,6 +426,43 @@ def main(argv: list[str] | None = None) -> int:
 
         write_profile_report(profile, output_path=args.output)
         print(f"Wrote profile report to {args.output}.")
+        return 0
+
+    if args.command == "simulate-session":
+        aliases = {
+            "c": "complete",
+            "complete": "complete",
+            "s": "skip",
+            "skip": "skip",
+            "e": "early-skip",
+            "early-skip": "early-skip",
+        }
+        machine = SessionStateMachine()
+        for index, raw in enumerate(args.events, start=1):
+            key = raw.strip().lower()
+            normalized = aliases.get(key)
+            if normalized is None:
+                print(
+                    f"Invalid event '{raw}'. Use complete|skip|early-skip (or c|s|e).",
+                    file=sys.stderr,
+                )
+                return 1
+            event = SessionEvent(
+                skipped=normalized in {"skip", "early-skip"},
+                early_skip=normalized == "early-skip",
+            )
+            snapshot = machine.apply(event)
+            interventions = snapshot.interventions
+            print(
+                f"#{index} {normalized}: "
+                f"state={snapshot.state.value} "
+                f"skip_run_len={snapshot.skip_run_len} "
+                f"complete_run_len={snapshot.complete_run_len} "
+                f"early_skip_recent={snapshot.early_skip_recent} "
+                f"exploration_multiplier={interventions.exploration_multiplier:.1f} "
+                f"inject_anchor={str(interventions.should_inject_anchor).lower()} "
+                f"suggest_reset={str(interventions.should_suggest_reset).lower()}"
+            )
         return 0
 
     with sqlite3.connect(args.db) as connection:
