@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 import sys
@@ -25,6 +26,7 @@ from spotifygpt.manual_import import (
     load_manual_payload,
     store_manual_payload,
 )
+from spotifygpt.musical_dna import compute_musical_dna, load_tracks_from_json, write_musical_dna
 from spotifygpt.pipeline import (
     build_daily_mode,
     build_weekly_radar,
@@ -257,6 +259,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="Mode label override in the form selector=Label. Repeatable.",
+    )
+
+    musical_dna_parser = subparsers.add_parser(
+        "musical-dna", help="Compute deterministic Musical DNA profile from local JSON/NDJSON tracks."
+    )
+    musical_dna_parser.add_argument(
+        "input",
+        type=Path,
+        help="Path to JSON/NDJSON file containing tracks with audio features.",
+    )
+    musical_dna_parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Optional path to write full JSON profile.",
     )
 
     simulate_session_parser = subparsers.add_parser(
@@ -509,6 +526,28 @@ def main(argv: list[str] | None = None) -> int:
 
         write_profile_report(profile, output_path=args.output)
         print(f"Wrote profile report to {args.output}.")
+        return 0
+
+    if args.command == "musical-dna":
+        try:
+            tracks = load_tracks_from_json(args.input)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"Failed to load tracks: {exc}", file=sys.stderr)
+            return 1
+
+        profile = compute_musical_dna(tracks)
+        payload = profile.to_dict()
+        print(
+            "Musical DNA summary: "
+            f"tracks={payload['track_count']}, "
+            f"energy_mean={payload['feature_summary']['energy']['mean']:.3f}, "
+            f"valence_mean={payload['feature_summary']['valence']['mean']:.3f}, "
+            f"tempo_p50={payload['feature_summary']['tempo']['p50']:.1f}"
+        )
+
+        if args.out is not None:
+            write_musical_dna(profile, args.out)
+            print(f"Wrote musical DNA JSON to {args.out}.")
         return 0
 
     if args.command == "simulate-session":
